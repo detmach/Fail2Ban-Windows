@@ -22,6 +22,9 @@ public class Fail2BanManager : IFail2BanManager
     // Thread-safe collections
     private readonly ConcurrentDictionary<string, EngellenenIP> _engellenenIpler = new();
     private readonly ConcurrentDictionary<string, HataliGiris> _hataliGirisler = new();
+    
+    // IP işleme senkronizasyonu için
+    private readonly ConcurrentDictionary<string, object> _ipLocks = new();
 
     public Fail2BanManager(
         ILogger<Fail2BanManager> logger,
@@ -42,6 +45,19 @@ public class Fail2BanManager : IFail2BanManager
         if (string.IsNullOrWhiteSpace(ipAdresi))
             return false;
 
+        // IP bazında senkronizasyon sağla
+        var ipLock = _ipLocks.GetOrAdd(ipAdresi, _ => new object());
+        
+        lock (ipLock)
+        {
+            // Memory'de kontrol et - hızlı kontrol
+            if (_engellenenIpler.ContainsKey(ipAdresi))
+            {
+                _logger.LogDebug("IP adresi memory'de zaten engellenmiş: {IpAdresi}", ipAdresi);
+                return false;
+            }
+        }
+
         // Veritabanından kontrol et - IP zaten banlanmış mı? (yeni scope ile)
         using var scope = _serviceProvider.CreateScope();
         var databaseService = scope.ServiceProvider.GetRequiredService<IDatabaseService>();
@@ -53,42 +69,61 @@ public class Fail2BanManager : IFail2BanManager
             return false;
         }
 
-        // Memory'de de kontrol et
-        if (_engellenenIpler.ContainsKey(ipAdresi))
+        // IP bazında tekrar senkronize kontrol
+        lock (ipLock)
         {
-            _logger.LogDebug("IP adresi memory'de zaten engellenmiş: {IpAdresi}", ipAdresi);
+            // Double-check locking pattern - memory'de tekrar kontrol
+            if (_engellenenIpler.ContainsKey(ipAdresi))
+            {
+                _logger.LogDebug("IP adresi memory'de zaten engellenmiş (double-check): {IpAdresi}", ipAdresi);
+                return false;
+            }
+
+            // Hatalı giriş kaydını güncelle
+            var hataliGiris = _hataliGirisler.AddOrUpdate(ipAdresi,
+                new HataliGiris 
+                { 
+                    IpAdresi = ipAdresi, 
+                    FilterAdi = filterAdi,
+                    HataSayisi = 1,
+                    IlkHataTarihi = DateTime.Now,
+                    SonHataTarihi = DateTime.Now
+                },
+                (key, existing) =>
+                {
+                    existing.HataArtir();
+                    existing.FilterAdi = filterAdi; // Son kullanılan filtreyi kaydet
+                    return existing;
+                });
+
+            _logger.LogDebug("Hatalı giriş kaydedildi - IP: {IpAdresi}, Sayı: {HataSayisi}, Filtre: {FilterAdi}", 
+                ipAdresi, hataliGiris.HataSayisi, filterAdi);
+
+            // Maksimum hata sayısını aşmış mı kontrol et
+            var maxHata = GetMaxHataForFilter(filterAdi);
+            if (hataliGiris.HataSayisi >= maxHata)
+            {
+                // Hemen memory'e blocking marker ekle (diğer thread'leri engelle)
+                var tempBlockedIp = new EngellenenIP
+                {
+                    IpAdresi = ipAdresi,
+                    EngellenmeTarihi = DateTime.Now,
+                    EngellemeBitisTarihi = DateTime.Now.AddYears(1), // Geçici - async işlem bitince düzeltilir
+                    FilterAdi = "PROCESSING",
+                    ToplamHataSayisi = hataliGiris.HataSayisi
+                };
+                
+                _engellenenIpler.TryAdd(ipAdresi, tempBlockedIp);
+                
+                // Async ban işlemini başlat
+                var engellemeSuresi = GetEngellemeZamaniForFilter(filterAdi);
+                _ = Task.Run(async () => await BlockIpInternalAsync(ipAdresi, engellemeSuresi, filterAdi, hataliGiris.HataSayisi));
+                
+                return true;
+            }
+
             return false;
         }
-
-        // Hatalı giriş kaydını güncelle
-        var hataliGiris = _hataliGirisler.AddOrUpdate(ipAdresi,
-            new HataliGiris 
-            { 
-                IpAdresi = ipAdresi, 
-                FilterAdi = filterAdi,
-                HataSayisi = 1,
-                IlkHataTarihi = DateTime.Now,
-                SonHataTarihi = DateTime.Now
-            },
-            (key, existing) =>
-            {
-                existing.HataArtir();
-                existing.FilterAdi = filterAdi; // Son kullanılan filtreyi kaydet
-                return existing;
-            });
-
-        _logger.LogDebug("Hatalı giriş kaydedildi - IP: {IpAdresi}, Sayı: {HataSayisi}, Filtre: {FilterAdi}", 
-            ipAdresi, hataliGiris.HataSayisi, filterAdi);
-
-        // Maksimum hata sayısını aşmış mı kontrol et
-        var maxHata = GetMaxHataForFilter(filterAdi);
-        if (hataliGiris.HataSayisi >= maxHata)
-        {
-            var engellemeSuresi = GetEngellemeZamaniForFilter(filterAdi);
-            return await BlockIpInternalAsync(ipAdresi, engellemeSuresi, filterAdi, hataliGiris.HataSayisi);
-        }
-
-        return false;
     }
 
     public async Task<bool> BlockIpManuallyAsync(string ipAdresi, int engellemeSuresi, string sebep = "Manuel Engelleme")
@@ -249,13 +284,20 @@ public class Fail2BanManager : IFail2BanManager
     {
         try
         {
+            _logger.LogDebug("IP adresi engelleme başlatılıyor: {IpAdresi}, Sebep: {Sebep}", ipAdresi, sebep);
+
+            // Önce firewall'da engelle
             var success = await _firewallManager.BlockIpAsync(ipAdresi);
             if (!success)
             {
                 _logger.LogError("IP adresi firewall'da engellenemedi: {IpAdresi}", ipAdresi);
+                
+                // Başarısız olursa memory'den geçici kaydı kaldır
+                _engellenenIpler.TryRemove(ipAdresi, out _);
                 return false;
             }
 
+            // Doğru engellenen IP bilgilerini oluştur
             var engellenenIp = new EngellenenIP
             {
                 IpAdresi = ipAdresi,
@@ -265,8 +307,8 @@ public class Fail2BanManager : IFail2BanManager
                 ToplamHataSayisi = hataSayisi
             };
 
-            // Memory'e ekle
-            _engellenenIpler.TryAdd(ipAdresi, engellenenIp);
+            // Memory'deki geçici kaydı doğru bilgilerle güncelle
+            _engellenenIpler.TryUpdate(ipAdresi, engellenenIp, _engellenenIpler[ipAdresi]);
 
             // Veritabanına ekle (yeni scope ile)
             BanKaydi? banKaydi = null;
@@ -275,13 +317,22 @@ public class Fail2BanManager : IFail2BanManager
                 using var scope = _serviceProvider.CreateScope();
                 var databaseService = scope.ServiceProvider.GetRequiredService<IDatabaseService>();
                 
-                banKaydi = await databaseService.BanKaydiEkleAsync(
-                    ipAdresi, 
-                    sebep, 
-                    engellemeSuresi / 60, // saniyeyi dakikaya çevir
-                    hataSayisi,
-                    $"Firewall engelleme aktif - {DateTime.Now:yyyy-MM-dd HH:mm:ss}"
-                );
+                // Önce veritabanında zaten ban kaydı var mı kontrol et
+                var mevcutBan = await databaseService.IpBanliMiAsync(ipAdresi);
+                if (mevcutBan)
+                {
+                    _logger.LogInformation("IP adresi veritabanında zaten banlanmış, yeni kayıt eklenmedi: {IpAdresi}", ipAdresi);
+                }
+                else
+                {
+                    banKaydi = await databaseService.BanKaydiEkleAsync(
+                        ipAdresi, 
+                        sebep, 
+                        engellemeSuresi / 60, // saniyeyi dakikaya çevir
+                        hataSayisi,
+                        $"Firewall engelleme aktif - {DateTime.Now:yyyy-MM-dd HH:mm:ss}"
+                    );
+                }
             }
             catch (Exception ex)
             {
@@ -336,6 +387,9 @@ public class Fail2BanManager : IFail2BanManager
         catch (Exception ex)
         {
             _logger.LogError(ex, "IP adresi engellenirken beklenmedik hata oluştu: {IpAdresi}", ipAdresi);
+            
+            // Hata durumunda memory'den geçici kaydı kaldır
+            _engellenenIpler.TryRemove(ipAdresi, out _);
             return false;
         }
     }

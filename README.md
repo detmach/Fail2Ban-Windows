@@ -349,6 +349,27 @@ public class CustomDatabaseService : IDatabaseService
    - MinRaporAraligiSaat'i artırın (varsayılan: 24)
    - API key'i kontrol edin
 
+5. **⚠️ Duplicate Ban İşlemleri (YENİ)**
+   ```
+   [2025-05-24 14:39:50] warn: IP adresi engellendi - IP: 203.56.4.242, Süre: 300 dakika, Sebep: EventLog-Other
+   [2025-05-24 14:39:51] warn: IP adresi engellendi - IP: 203.56.4.242, Süre: 300 dakika, Sebep: EventLog-Other
+   ```
+   
+   **Sebep**: Aynı IP'den hızlı saldırılar geldiğinde birden fazla event concurrent olarak işlenebilir.
+   
+   **Çözüm**: v1.0.3+'da şu optimizasyonlar eklendi:
+   - ✅ IP bazında thread synchronization 
+   - ✅ Double-check locking pattern
+   - ✅ Event duplicate detection (5 saniye window)
+   - ✅ Database duplicate prevention
+   - ✅ Memory + Database sync iyileştirmesi
+   
+   **Test**: Artık aynı IP için tekrar eden ban işlemleri önleniyor:
+   ```
+   [2025-05-24 14:45:15] dbug: IP adresi memory'de zaten engellenmiş (double-check): 203.56.4.242
+   [2025-05-24 14:45:15] dbug: Duplicate event tespit edildi, atlanıyor - Key: 4625_2025-05-24 14:45:15_Security_1024
+   ```
+
 ### Debug Modunda Çalıştırma
 ```json
 {
@@ -365,6 +386,29 @@ Windows Event Viewer'da Security ve Application log'larını kontrol edin:
 - **Windows + R** → `eventvwr.msc`
 - **Windows Logs** → **Security/Application**
 - Event ID'leri kontrol edin (4625, 4771, 18456)
+
+### Performance İzleme
+
+**Normal Log Çıktısı (Optimized)**:
+```
+[2025-05-24 14:45:10] dbug: Event işleniyor - ID: 4625, Log: Security, Source: Microsoft-Windows-Security-Auditing
+[2025-05-24 14:45:10] dbug: Hatalı giriş kaydedildi - IP: 203.56.4.242, Sayı: 3, Filtre: EventLog-RDP
+[2025-05-24 14:45:10] dbug: IP adresi engelleme başlatılıyor: 203.56.4.242, Sebep: EventLog-RDP
+[2025-05-24 14:45:10] info: IP adresi başarıyla engellendi: 203.56.4.242
+[2025-05-24 14:45:10] warn: IP adresi engellendi - IP: 203.56.4.242, Süre: 60 dakika, Sebep: EventLog-RDP
+[2025-05-24 14:45:11] dbug: Duplicate event tespit edildi, atlanıyor - Key: 4625_2025-05-24 14:45:10_Security_1024
+```
+
+**Memory & Database Sync Test**:
+```powershell
+# PowerShell'de test edin
+Get-NetFirewallRule -DisplayName "*203.56.4.242*" | Select-Object DisplayName, Enabled
+# Sonuç: Sadece 1 tane rule olmalı
+
+# SQLite'da test edin
+sqlite3 fail2ban.db "SELECT COUNT(*) FROM BanKayitlari WHERE IpAdresi='203.56.4.242' AND Aktif=1;"
+# Sonuç: 1 (birden fazla olmamalı)
+```
 
 ## 📁 Proje Yapısı
 
@@ -404,6 +448,16 @@ Fail2Ban/
 ```
 
 ## 🎉 Versiyon Geçmişi
+
+### v1.0.3 (2025-05-24) - Duplicate Ban Fix
+- ✅ **Critical Fix**: Duplicate ban işlemlerinin önlenmesi
+- ✅ IP bazında thread synchronization (ConcurrentDictionary + locks)
+- ✅ Double-check locking pattern implementasyonu
+- ✅ Event duplicate detection (5 saniye window)
+- ✅ Database duplicate prevention iyileştirmesi
+- ✅ Memory + Database synchronization optimizasyonu
+- ✅ Background task isolation (her task için ayrı scope)
+- ✅ Performance monitoring ve debug logging iyileştirmesi
 
 ### v1.0.2 (2025-01-24)
 - ✅ SQLite veritabanı entegrasyonu

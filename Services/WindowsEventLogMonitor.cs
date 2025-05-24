@@ -6,6 +6,7 @@ using Fail2Ban.Configuration;
 using Fail2Ban.Interfaces;
 using System.Xml;
 using System.Net;
+using System.Collections.Concurrent;
 
 namespace Fail2Ban.Services;
 
@@ -21,6 +22,10 @@ public class WindowsEventLogMonitor : IEventLogMonitor, IDisposable
     private readonly Dictionary<object, string> _eventLogNames = new();
     private bool _isMonitoring = false;
     private readonly object _lockObject = new object();
+    
+    // Event processing duplicate prevention
+    private readonly ConcurrentDictionary<string, DateTime> _processedEvents = new();
+    private readonly TimeSpan _duplicateWindow = TimeSpan.FromSeconds(5); // 5 saniye içinde aynı event'i tekrar işleme
 
     public WindowsEventLogMonitor(
         ILogger<WindowsEventLogMonitor> logger,
@@ -181,6 +186,29 @@ public class WindowsEventLogMonitor : IEventLogMonitor, IDisposable
     {
         _logger.LogDebug("Event işleniyor - ID: {EventId}, Log: {LogName}, Source: {Source}, Zaman: {Timestamp}", 
             eventId, logName, source, timestamp);
+
+        // Duplicate event kontrolü - aynı event'in 5 saniye içinde tekrar işlenmesini engelle
+        var eventKey = $"{eventId}_{timestamp:yyyy-MM-dd HH:mm:ss}_{source}_{eventData.Length}";
+        var now = DateTime.Now;
+        
+        if (_processedEvents.TryGetValue(eventKey, out var lastProcessed) && 
+            (now - lastProcessed) < _duplicateWindow)
+        {
+            _logger.LogDebug("Duplicate event tespit edildi, atlanıyor - Key: {EventKey}", eventKey);
+            return;
+        }
+        
+        // Event'i işlendiklerden kaydet
+        _processedEvents.TryAdd(eventKey, now);
+        
+        // Eski event kayıtlarını temizle (10 dakikadan eski olanları)
+        var oldKeys = _processedEvents.Where(kvp => (now - kvp.Value) > TimeSpan.FromMinutes(10))
+                                     .Select(kvp => kvp.Key)
+                                     .ToList();
+        foreach (var oldKey in oldKeys)
+        {
+            _processedEvents.TryRemove(oldKey, out _);
+        }
 
         switch (eventId)
         {
