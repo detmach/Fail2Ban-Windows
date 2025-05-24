@@ -16,6 +16,7 @@ public class Fail2BanManager : IFail2BanManager
     private readonly Fail2BanSettings _settings;
     private readonly IFirewallManager _firewallManager;
     private readonly IAbuseReporter _abuseReporter;
+    private readonly IDatabaseService _databaseService;
     
     // Thread-safe collections
     private readonly ConcurrentDictionary<string, EngellenenIP> _engellenenIpler = new();
@@ -25,12 +26,14 @@ public class Fail2BanManager : IFail2BanManager
         ILogger<Fail2BanManager> logger,
         IOptions<Fail2BanSettings> settings,
         IFirewallManager firewallManager,
-        IAbuseReporter abuseReporter)
+        IAbuseReporter abuseReporter,
+        IDatabaseService databaseService)
     {
         _logger = logger;
         _settings = settings.Value;
         _firewallManager = firewallManager;
         _abuseReporter = abuseReporter;
+        _databaseService = databaseService;
     }
 
     public async Task<bool> RecordFailedAttemptAsync(string ipAdresi, string filterAdi)
@@ -38,10 +41,18 @@ public class Fail2BanManager : IFail2BanManager
         if (string.IsNullOrWhiteSpace(ipAdresi))
             return false;
 
-        // Zaten engellenmiş mi kontrol et
+        // Veritabanından kontrol et - IP zaten banlanmış mı?
+        var veritabanindaBanli = await _databaseService.IpBanliMiAsync(ipAdresi);
+        if (veritabanindaBanli)
+        {
+            _logger.LogDebug("IP adresi veritabanında zaten banlanmış: {IpAdresi}", ipAdresi);
+            return false;
+        }
+
+        // Memory'de de kontrol et
         if (_engellenenIpler.ContainsKey(ipAdresi))
         {
-            _logger.LogDebug("IP adresi zaten engellenmiş: {IpAdresi}", ipAdresi);
+            _logger.LogDebug("IP adresi memory'de zaten engellenmiş: {IpAdresi}", ipAdresi);
             return false;
         }
 
@@ -65,7 +76,7 @@ public class Fail2BanManager : IFail2BanManager
         _logger.LogDebug("Hatalı giriş kaydedildi - IP: {IpAdresi}, Sayı: {HataSayisi}, Filtre: {FilterAdi}", 
             ipAdresi, hataliGiris.HataSayisi, filterAdi);
 
-        // Maksimum hata sayısını aş mış mı kontrol et
+        // Maksimum hata sayısını aşmış mı kontrol et
         var maxHata = GetMaxHataForFilter(filterAdi);
         if (hataliGiris.HataSayisi >= maxHata)
         {
@@ -83,10 +94,20 @@ public class Fail2BanManager : IFail2BanManager
 
     public async Task<bool> UnblockIpManuallyAsync(string ipAdresi)
     {
+        // Önce veritabanından ban kaydını pasif yap
+        try
+        {
+            await _databaseService.BanKaydiPasifYapAsync(ipAdresi);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Veritabanında ban kaydı pasif yapılırken hata: {IpAdresi}", ipAdresi);
+        }
+
         if (!_engellenenIpler.TryRemove(ipAdresi, out var engellenenIp))
         {
-            _logger.LogWarning("Kaldırılacak engellenmiş IP bulunamadı: {IpAdresi}", ipAdresi);
-            return false;
+            _logger.LogWarning("Kaldırılacak engellenmiş IP memory'de bulunamadı: {IpAdresi}", ipAdresi);
+            // Yine de firewall'dan kaldırmayı dene
         }
 
         var success = await _firewallManager.UnblockIpAsync(ipAdresi);
@@ -99,8 +120,11 @@ public class Fail2BanManager : IFail2BanManager
         }
         else
         {
-            // Başarısız olursa geri ekle
-            _engellenenIpler.TryAdd(ipAdresi, engellenenIp);
+            // Başarısız olursa memory'e geri ekle
+            if (engellenenIp != null)
+            {
+                _engellenenIpler.TryAdd(ipAdresi, engellenenIp);
+            }
         }
 
         return success;
@@ -108,6 +132,16 @@ public class Fail2BanManager : IFail2BanManager
 
     public async Task<int> CleanupExpiredBlocksAsync()
     {
+        // Önce veritabanındaki süresi dolmuş banları pasif yap
+        try
+        {
+            await _databaseService.SuresiDolmusBanlariPasifYapAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Veritabanında süresi dolmuş banlar pasif yapılırken hata");
+        }
+
         var expiredIps = _engellenenIpler.Values
             .Where(ip => !ip.AktifMi)
             .Select(ip => ip.IpAdresi)
@@ -160,6 +194,43 @@ public class Fail2BanManager : IFail2BanManager
     }
 
     /// <summary>
+    /// Başlangıçta veritabanından aktif banları yükler
+    /// </summary>
+    public async Task InitializeFromDatabaseAsync()
+    {
+        try
+        {
+            _logger.LogInformation("Veritabanından aktif ban kayıtları yükleniyor...");
+            
+            var aktifBanlar = await _databaseService.GetAktifBanKayitlariAsync();
+            
+            foreach (var ban in aktifBanlar)
+            {
+                // Memory'e yükle
+                var engellenenIp = new EngellenenIP
+                {
+                    IpAdresi = ban.IpAdresi,
+                    EngellenmeTarihi = ban.YasaklamaZamani,
+                    EngellemeBitisTarihi = ban.SilmeZamani ?? DateTime.MaxValue,
+                    FilterAdi = ban.KuralAdi,
+                    ToplamHataSayisi = ban.BasarisizGirisSayisi
+                };
+
+                _engellenenIpler.TryAdd(ban.IpAdresi, engellenenIp);
+                
+                // Firewall'a da ekle (eğer yoksa)
+                await _firewallManager.BlockIpAsync(ban.IpAdresi);
+            }
+            
+            _logger.LogInformation("Veritabanından {Count} aktif ban kaydı yüklendi", aktifBanlar.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Veritabanından ban kayıtları yüklenirken hata");
+        }
+    }
+
+    /// <summary>
     /// IP adresini dahili olarak engeller
     /// </summary>
     private async Task<bool> BlockIpInternalAsync(string ipAdresi, int engellemeSuresi, string sebep, int hataSayisi)
@@ -182,7 +253,25 @@ public class Fail2BanManager : IFail2BanManager
                 ToplamHataSayisi = hataSayisi
             };
 
+            // Memory'e ekle
             _engellenenIpler.TryAdd(ipAdresi, engellenenIp);
+
+            // Veritabanına ekle
+            try
+            {
+                await _databaseService.BanKaydiEkleAsync(
+                    ipAdresi, 
+                    sebep, 
+                    engellemeSuresi / 60, // saniyeyi dakikaya çevir
+                    hataSayisi,
+                    $"Firewall engelleme aktif - {DateTime.Now:yyyy-MM-dd HH:mm:ss}"
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Ban kaydı veritabanına eklenirken hata: {IpAdresi}", ipAdresi);
+                // Veritabanı hatası olsa da firewall engellemesi devam eder
+            }
             
             _logger.LogWarning("IP adresi engellendi - IP: {IpAdresi}, Süre: {Dakika} dakika, Sebep: {Sebep}", 
                 ipAdresi, engellenenIp.EngellemeDAkika, sebep);

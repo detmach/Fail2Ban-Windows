@@ -2,9 +2,11 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.EntityFrameworkCore;
 using Fail2Ban.Configuration;
 using Fail2Ban.Interfaces;
 using Fail2Ban.Services;
+using Fail2Ban.Data;
 
 namespace Fail2Ban;
 
@@ -18,6 +20,9 @@ class Program
         try
         {
             var host = CreateHostBuilder(args).Build();
+            
+            // Veritabanını initialize et
+            await InitializeDatabaseAsync(host);
             
             // Uygulama başlangıç bilgilerini göster
             await ShowStartupInfoAsync(host);
@@ -51,6 +56,12 @@ class Program
                 services.Configure<AbuseIPDBSettings>(
                     context.Configuration.GetSection("AbuseIPDBSettings"));
 
+                // SQLite veritabanı
+                var connectionString = context.Configuration.GetConnectionString("DefaultConnection") 
+                    ?? "Data Source=fail2ban.db";
+                services.AddDbContext<Fail2BanDbContext>(options =>
+                    options.UseSqlite(connectionString));
+
                 // HTTP Client
                 services.AddHttpClient<IAbuseReporter, AbuseIPDBReporter>();
 
@@ -58,6 +69,7 @@ class Program
                 services.AddSingleton<ILogAnalyzer, LogAnalyzer>();
                 services.AddSingleton<IFirewallManager, WindowsFirewallManager>();
                 services.AddSingleton<IAbuseReporter, AbuseIPDBReporter>();
+                services.AddScoped<IDatabaseService, DatabaseService>();
                 services.AddSingleton<IFail2BanManager, Fail2BanManager>();
 
                 // Background servis
@@ -77,6 +89,38 @@ class Program
             .UseConsoleLifetime();
 
     /// <summary>
+    /// Veritabanını initialize eder ve mevcut ban kayıtlarını yükler
+    /// </summary>
+    static async Task InitializeDatabaseAsync(IHost host)
+    {
+        using var scope = host.Services.CreateScope();
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        
+        try
+        {
+            logger.LogInformation("Veritabanı başlatılıyor...");
+            
+            // Veritabanını oluştur
+            var databaseService = scope.ServiceProvider.GetRequiredService<IDatabaseService>();
+            await databaseService.InitializeDatabaseAsync();
+            
+            // Fail2Ban manager'ı veritabanından initialize et
+            var fail2BanManager = scope.ServiceProvider.GetRequiredService<IFail2BanManager>();
+            if (fail2BanManager is Fail2BanManager manager)
+            {
+                await manager.InitializeFromDatabaseAsync();
+            }
+            
+            logger.LogInformation("Veritabanı başarıyla initialize edildi");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Veritabanı initialize edilirken hata oluştu");
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Uygulama başlangıç bilgilerini gösterir
     /// </summary>
     static async Task ShowStartupInfoAsync(IHost host)
@@ -86,7 +130,7 @@ class Program
         var abuseSettings = host.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<AbuseIPDBSettings>>().Value;
 
         logger.LogInformation("=== Fail2Ban Servisi Başlatıldı ===");
-        logger.LogInformation("Versiyon: 1.0.0");
+        logger.LogInformation("Versiyon: 1.0.1");
         logger.LogInformation("Platform: {Platform}", Environment.OSVersion.VersionString);
         logger.LogInformation("Framework: {Framework}", Environment.Version);
         
@@ -125,6 +169,24 @@ class Program
             {
                 logger.LogWarning("AbuseIPDB aktif ancak API key tanımlı değil!");
             }
+        }
+
+        // Veritabanı istatistiklerini göster
+        try
+        {
+            using var scope = host.Services.CreateScope();
+            var databaseService = scope.ServiceProvider.GetRequiredService<IDatabaseService>();
+            var stats = await databaseService.GetIstatistiklerAsync();
+            
+            logger.LogInformation("=== Veritabanı İstatistikleri ===");
+            logger.LogInformation("Toplam Ban Sayısı: {Total}", stats.GetValueOrDefault("ToplamBan", 0));
+            logger.LogInformation("Aktif Ban Sayısı: {Active}", stats.GetValueOrDefault("AktifBan", 0));
+            logger.LogInformation("Bugünkü Ban Sayısı: {Today}", stats.GetValueOrDefault("BugunBan", 0));
+            logger.LogInformation("Bu Hafta Ban Sayısı: {Week}", stats.GetValueOrDefault("BuHaftaBan", 0));
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Veritabanı istatistikleri alınamadı");
         }
 
         // Güncel log dosyasını kontrol et
@@ -175,6 +237,7 @@ class Program
         
         Console.WriteLine($"\n[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Fail2Ban servisi aktif!");
         Console.WriteLine("Gerçek zamanlı log izleme başlatıldı...");
+        Console.WriteLine("SQLite veritabanı ile kalıcı ban kayıtları aktif!");
         Console.WriteLine("\nDurdurmak için Ctrl+C kombinasyonunu kullanın.");
     }
 } 
