@@ -56,4 +56,19 @@ public interface IDatabaseService
     /// İstatistikleri getir
     /// </summary>
     Task<Dictionary<string, object>> GetIstatistiklerAsync();
+    
+    /// <summary>
+    /// IP adresinin son belirtilen saat içinde AbuseIPDB'ye raporlanıp raporlanmadığını kontrol eder
+    /// </summary>
+    Task<bool> IpSonRaporlandiMiAsync(string ipAdresi, int saatSiniri = 24);
+    
+    /// <summary>
+    /// Ban kaydını AbuseIPDB'ye raporlandı olarak işaretler
+    /// </summary>
+    Task BanKaydiAbuseRaporlandiAsync(int banKaydiId);
+    
+    /// <summary>
+    /// Belirli IP için en son ban kaydını getirir
+    /// </summary>
+    Task<BanKaydi?> GetSonBanKaydiAsync(string ipAdresi);
 } 

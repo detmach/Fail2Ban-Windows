@@ -64,4 +64,9 @@ public class BanKaydi
     /// Kaç kez başarısız giriş yapıldı
     /// </summary>
     public int BasarisizGirisSayisi { get; set; }
+    
+    /// <summary>
+    /// AbuseIPDB'ye ne zaman raporlandı (null ise henüz raporlanmadı)
+    /// </summary>
+    public DateTime? AbuseIPDBRaporTarihi { get; set; }
 } 

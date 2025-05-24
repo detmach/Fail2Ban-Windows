@@ -1,93 +1,149 @@
-# Fail2Ban Windows Servisi
+# Fail2Ban Windows Servisi (.NET 9)
 
-Windows platformu için geliştirilmiş modern Fail2Ban implementasyonu. Bu uygulama, log dosyalarını izleyerek şüpheli aktiviteleri tespit eder ve Windows Firewall kullanarak otomatik IP engelleme işlemleri gerçekleştirir.
+Windows platformu için geliştirilmiş modern Fail2Ban implementasyonu. Bu uygulama, log dosyalarını ve Windows Event Log'larını izleyerek şüpheli aktiviteleri tespit eder, SQLite veritabanında kalıcı ban kayıtları tutar ve Windows Firewall kullanarak otomatik IP engelleme işlemleri gerçekleştirir.
 
-## 🚀 Özellikler
+## 🚀 Yeni Özellikler (v1.0.2)
 
-- **Gerçek Zamanlı Log İzleme**: Log dosyalarını sürekli izler ve yeni girişleri analiz eder
-- **Esnek Filtre Sistemi**: Regex tabanlı özelleştirilebilir log filtreleri
-- **Windows Firewall Entegrasyonu**: Otomatik IP engelleme ve engel kaldırma
-- **AbuseIPDB Entegrasyonu**: Şüpheli IP'leri otomatik olarak raporlama
-- **Modüler Yapı**: Farklı servisler için kolayca genişletilebilir
-- **Kapsamlı Loglama**: Detaylı log kayıtları ve hata takibi
-- **Konfigürasyon Tabanlı**: JSON dosyası ile kolay yapılandırma
+- **🗄️ SQLite Veritabanı Entegrasyonu**: Kalıcı ban kayıtları, program yeniden başlayınca aynı IP'lerin tekrar banlanmasını önler
+- **📝 Windows Event Log İzleme**: Security ve Application log'larından gerçek zamanlı saldırı tespit
+- **🛡️ Çoklu Saldırı Türü Desteği**: RDP, SMTP, Network, Kerberos, SQL Server saldırılarını tespit eder
+- **🌐 AbuseIPDB Duplicate Kontrolü**: Aynı IP'lerin 24 saat içinde tekrar raporlanmasını önler
+- **🎯 Sistem-Specific Mesajlar**: Her saldırı türü için özel AbuseIPDB mesajları
+- **⚡ Thread Safety**: Çoklu thread desteği ile performans optimizasyonu
+- **📊 Gelişmiş İstatistikler**: Detaylı ban istatistikleri ve raporlama
+
+## 🎯 Desteklenen Saldırı Türleri
+
+### Log Dosyası Tabanlı
+- **SMTP-AUTH-Failed**: Mail Enable SMTP Authentication saldırıları
+- **SMTP-Brute-Force**: SMTP Brute Force saldırıları
+
+### Windows Event Log Tabanlı
+- **EventLog-RDP**: RDP Brute Force (Event ID 4625, Logon Type 10)
+- **EventLog-Network**: Network Authentication (Event ID 4625, Logon Type 3)
+- **EventLog-Kerberos**: Kerberos Failure (Event ID 4771)
+- **EventLog-SQLServer**: SQL Server Failed Login (Event ID 18456)
+- **EventLog-Other**: Diğer Windows authentication hataları
 
 ## 📋 Gereksinimler
 
-- Windows 10/11 veya Windows Server 2016+
+- Windows Server 2016+ / Windows 10+
 - .NET 9.0 Runtime
 - Yönetici (Administrator) yetkileri
-- Mail Enable SMTP Server (varsayılan konfigürasyon için)
+- SQLite desteği (otomatik olarak dahil)
+- İsteğe bağlı: Mail Enable SMTP Server
 
 ## 🛠️ Kurulum
 
-### 1. Projeyi İndirin veya Klonlayın
-
+### 1. Projeyi İndirin
 ```bash
 git clone https://github.com/your-repo/fail2ban-windows.git
 cd fail2ban-windows/Fail2Ban
 ```
 
 ### 2. Bağımlılıkları Yükleyin
-
 ```bash
 dotnet restore
 ```
 
 ### 3. Projeyi Derleyin
-
 ```bash
 dotnet build --configuration Release
 ```
 
 ### 4. Konfigürasyonu Düzenleyin
+`appsettings.json` dosyasını ihtiyaçlarınıza göre düzenleyin.
 
-`appsettings.json` dosyasını ihtiyaçlarınıza göre düzenleyin:
+## ⚙️ Konfigürasyon
 
+### Ana Ayarlar (`Fail2BanSettings`)
 ```json
 {
   "Fail2BanSettings": {
     "MaxHataliGiris": 3,
     "EngellemeZamani": 18000,
-    "LogDosyaYolSablonu": "C:\\Your\\Log\\Path\\LogFile-{0}.log"
+    "KontrolAraligi": 10000,
+    "LogDosyaYolSablonu": "C:\\Program Files (x86)\\Mail Enable\\Logging\\SMTP\\SMTP-Activity-{0}.log",
+    "LogFiltreler": [
+      {
+        "Ad": "SMTP-AUTH-Failed",
+        "Pattern": "^(?<tarih>\\d{2}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2})\\s+SMTP-IN\\s+\\w+\\.\\w+\\s+\\d+\\s+(?<ipAdresi>\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})\\s+AUTH\\s+(?=.*535 Invalid Username or Password)",
+        "IpGrupAdi": "ipAdresi",
+        "Aktif": true,
+        "OzelMaxHata": null,
+        "OzelEngellemeSuresi": null
+      }
+    ]
   }
 }
 ```
 
-## ⚙️ Konfigürasyon
-
-### Ana Ayarlar (`Fail2BanSettings`)
-
-| Ayar | Açıklama | Varsayılan |
-|------|----------|------------|
-| `MaxHataliGiris` | İzin verilen maksimum hatalı giriş sayısı | 3 |
-| `EngellemeZamani` | Engelleme süresi (saniye) | 18000 (5 saat) |
-| `KontrolAraligi` | Log kontrol aralığı (milisaniye) | 10000 (10 saniye) |
-| `LogDosyaYolSablonu` | Log dosya yolu şablonu | Mail Enable SMTP log yolu |
-
-### Log Filtreleri
-
-Her filtre için aşağıdaki ayarları yapılandırabilirsiniz:
-
+### Veritabanı Ayarları
 ```json
 {
-  "Ad": "Filtre-Adi",
-  "Pattern": "Regex-Pattern",
-  "IpGrupAdi": "ipAdresi",
-  "Aktif": true,
-  "OzelMaxHata": 5,
-  "OzelEngellemeSuresi": 3600
+  "ConnectionStrings": {
+    "DefaultConnection": "Data Source=fail2ban.db"
+  }
 }
 ```
 
-### AbuseIPDB Ayarları
+### Event Log Ayarları
+```json
+{
+  "EventLogSettings": {
+    "Aktif": true,
+    "IzlenenEventIdler": [4625, 4771, 18456],
+    "IzlenenLoglar": ["Security", "Application"],
+    "Filtreler": [
+      {
+        "Ad": "EventLog-RDP",
+        "Aktif": true,
+        "OzelMaxHata": 3,
+        "OzelEngellemeSuresi": 3600,
+        "LogonTypes": [10],
+        "EventLogKaynagi": "Security",
+        "Aciklama": "Uzak Masaüstü (RDP) başarısız giriş denemeleri"
+      },
+      {
+        "Ad": "EventLog-SQLServer",
+        "Aktif": true,
+        "OzelMaxHata": 5,
+        "OzelEngellemeSuresi": 3600,
+        "EventLogKaynagi": "Application",
+        "EventSource": "MSSQLSERVER",
+        "Aciklama": "SQL Server başarısız giriş denemeleri"
+      }
+    ]
+  }
+}
+```
 
+### AbuseIPDB Ayarları (Duplicate Kontrolü ile)
 ```json
 {
   "AbuseIPDBSettings": {
-    "ApiKey": "your-api-key",
+    "ApiKey": "your-api-key-here",
+    "ApiUrl": "https://api.abuseipdb.com/api/v2/report",
+    "Kategori": 18,
     "Aktif": true,
-    "Kategori": 18
+    "MinRaporAraligiSaat": 24,
+    "SistemMesajlari": {
+      "SMTP-AUTH-Failed": "SMTP Authentication attack detected. Multiple failed login attempts from {0}. IP banned for {1} minutes at {2}. Failed attempts: {3}",
+      "EventLog-RDP": "RDP Brute Force attack detected. Multiple failed Remote Desktop login attempts from {0}. IP banned for {1} minutes at {2}. Failed attempts: {3}",
+      "EventLog-SQLServer": "SQL Server Brute Force attack detected. Multiple failed database login attempts from {0}. IP banned for {1} minutes at {2}. Failed attempts: {3}"
+    }
+  }
+}
+```
+
+### Ban Sistemleri Kontrolü
+```json
+{
+  "BanSistemleri": {
+    "LogIzleme": { "Aktif": true, "Aciklama": "Log dosyalarını izleyerek SMTP saldırılarını tespit eder" },
+    "EventLogIzleme": { "Aktif": true, "Aciklama": "Windows Event Log'larını izleyerek RDP ve diğer saldırıları tespit eder" },
+    "AbuseIPDBRapor": { "Aktif": true, "Aciklama": "Engellenen IP'leri AbuseIPDB'ye raporlar" },
+    "WindowsFirewall": { "Aktif": true, "Aciklama": "Windows Firewall üzerinden IP engellemesi yapar" }
   }
 }
 ```
@@ -95,119 +151,277 @@ Her filtre için aşağıdaki ayarları yapılandırabilirsiniz:
 ## 🚦 Kullanım
 
 ### Konsol Modunda Çalıştırma
-
 ```bash
 dotnet run
 ```
 
-### Windows Servis Olarak Kurma
+### Çıktı Örneği
+```
+=== Fail2Ban Servisi Başlatıldı ===
+Versiyon: 1.0.2
+Platform: Microsoft Windows NT 10.0.26100.0
 
-1. Projeyi `publish` edin:
-```bash
-dotnet publish --configuration Release --output ./publish
+=== Ban Sistemleri ===
+Log İzleme: Aktif
+Event Log İzleme: Aktif
+AbuseIPDB Rapor: Aktif
+Windows Firewall: Aktif
+
+=== Event Log Filtreleri ===
+- EventLog-RDP: MaxFail=3, BanTime=3600s, LogonTypes=[10]
+- EventLog-SQLServer: MaxFail=5, BanTime=3600s, Source=MSSQLSERVER
+
+=== Veritabanı İstatistikleri ===
+Toplam Ban Sayısı: 15
+Aktif Ban Sayısı: 3
+Bugünkü Ban Sayısı: 5
 ```
 
-2. Windows servis olarak kurun (PowerShell Admin):
+### Windows Servis Olarak Kurma
 ```powershell
+# Publish edin
+dotnet publish --configuration Release --output ./publish
+
+# Windows servis olarak kurun (PowerShell Admin)
 sc create "Fail2Ban" binPath="C:\path\to\publish\Fail2Ban.exe"
 sc start "Fail2Ban"
 ```
 
-### Manuel IP Engelleme
+## 🗄️ Veritabanı Özellikleri
 
-Kod içerisinden:
+### Ban Kayıtları (BanKaydi Tablosu)
+- **IpAdresi**: Engellenen IP adresi
+- **YasaklamaZamani**: Ban başlangıç zamanı
+- **SilmeZamani**: Ban bitiş zamanı
+- **BanSuresiDakika**: Ban süresi (dakika)
+- **KuralAdi**: Hangi kural ile banlandı
+- **BasarisizGirisSayisi**: Kaç başarısız giriş sonucu banlandı
+- **AbuseIPDBRaporTarihi**: AbuseIPDB'ye ne zaman raporlandı
+- **Aktif**: Ban hala aktif mi
+
+### Veritabanı İşlemleri
 ```csharp
-var fail2BanManager = serviceProvider.GetService<IFail2BanManager>();
-await fail2BanManager.BlockIpManuallyAsync("192.168.1.100", 3600, "Manuel Test");
+// IP banlanmış mı kontrol et
+var banli = await databaseService.IpBanliMiAsync("192.168.1.100");
+
+// Aktif ban kayıtlarını al
+var aktifBanlar = await databaseService.GetAktifBanKayitlariAsync();
+
+// İstatistikleri al
+var stats = await databaseService.GetIstatistiklerAsync();
 ```
 
-## 📝 Log Filtreleri Örnekleri
+## 📝 Event Log İzleme
 
-### SMTP Auth Failed
-```regex
-^(?<tarih>\d{2}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s+SMTP-IN\s+\w+\.\w+\s+\d+\s+(?<ipAdresi>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+AUTH\s+(?=.*535 Invalid Username or Password)
+### Desteklenen Event ID'ler
+- **4625**: An account failed to log on (Security Log)
+- **4771**: Kerberos pre-authentication failed (Security Log)  
+- **18456**: SQL Server login failed (Application Log)
+
+### RDP Saldırı Tespit Örneği
+```
+[2025-01-24 14:30:15] warn: RDP Brute Force tespit edildi
+IP: 192.168.1.100, Kullanıcı: admin, Logon Type: 10
+[2025-01-24 14:30:15] warn: IP adresi engellendi - IP: 192.168.1.100, Süre: 60 dakika
 ```
 
-### FTP Brute Force
-```regex
-^(?<tarih>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+.*FTP.*(?<ipAdresi>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*(?:login failed|authentication failed)
+### SQL Server Saldırı Tespit Örneği
+```
+[2025-01-24 14:35:20] warn: SQL Server başarısız giriş - IP: 10.0.0.50, Kullanıcı: sa
+[2025-01-24 14:35:20] info: IP adresi AbuseIPDB'ye raporlandı: 10.0.0.50
 ```
 
-### SSH Brute Force
-```regex
-^(?<tarih>\w{3}\s+\d{1,2} \d{2}:\d{2}:\d{2}).*sshd.*Failed password for.*from (?<ipAdresi>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})
-```
+## 🛡️ Güvenlik Özellikleri
 
-## 🔧 Genişletme
+### IP Filtering
+- Loopback adresleri (127.x.x.x) filtrelenir
+- Private IP aralıkları (192.168.x.x, 10.x.x.x, 172.16-31.x.x) filtrelenir
+- APIPA adresleri (169.254.x.x) filtrelenir
 
-### Yeni Filtre Ekleme
+### AbuseIPDB Duplicate Prevention
+- Aynı IP 24 saat içinde tekrar raporlanmaz
+- Veritabanında rapor tarihi takip edilir
+- API limitlerini aşmayı önler
 
-1. `appsettings.json` dosyasına yeni filtre ekleyin
-2. Regex pattern'ini test edin
-3. Servisi yeniden başlatın
+### Thread Safety
+- Tüm database işlemleri için ayrı scope kullanılır
+- ConcurrentDictionary ile memory thread-safety
+- Background task'ler için isolated database context
 
-### Farklı Firewall Yöneticisi
+## 📊 İstatistikler ve Monitoring
 
-`IFirewallManager` interface'ini implement ederek farklı firewall sistemleri destekleyebilirsiniz:
-
-```csharp
-public class CustomFirewallManager : IFirewallManager
-{
-    public async Task<bool> BlockIpAsync(string ipAddress)
-    {
-        // Özel firewall implementasyonu
-    }
-}
-```
-
-### Farklı Log Kaynaları
-
-`LogMonitorService` sınıfını genişleterek farklı log kaynaklarını destekleyebilirsiniz.
-
-## 🐛 Sorun Giderme
-
-### Yaygın Sorunlar
-
-1. **Log dosyası bulunamıyor**
-   - Log dosya yolunu kontrol edin
-   - Dosya izinlerini kontrol edin
-
-2. **Firewall kuralları oluşturulamıyor**
-   - Yönetici yetkileri ile çalıştırın
-   - Windows Firewall servisinin aktif olduğunu kontrol edin
-
-3. **AbuseIPDB raporlaması çalışmıyor**
-   - API key'i kontrol edin
-   - İnternet bağlantısını kontrol edin
+### Veritabanı İstatistikleri
+- Toplam ban sayısı
+- Aktif ban sayısı  
+- Bugünkü ban sayısı
+- Bu hafta ban sayısı
+- En çok ban yiyen IP'ler (Top 10)
+- En çok tetiklenen kurallar (Top 10)
 
 ### Log Seviyelerini Ayarlama
-
 ```json
 {
   "Logging": {
     "LogLevel": {
       "Default": "Information",
+      "Microsoft.EntityFrameworkCore.Database.Command": "None",
       "Fail2Ban": "Debug"
     }
   }
 }
 ```
 
-## 📊 Monitoring
+## 🔧 Genişletme
 
-Uygulama aşağıdaki metrikleri takip eder:
+### Yeni Event ID Ekleme
+```json
+{
+  "EventLogSettings": {
+    "IzlenenEventIdler": [4625, 4771, 18456, 4776],
+    "Filtreler": [
+      {
+        "Ad": "EventLog-NewEvent",
+        "Aktif": true,
+        "OzelMaxHata": 3,
+        "OzelEngellemeSuresi": 3600,
+        "EventLogKaynagi": "Security",
+        "Aciklama": "Yeni event türü"
+      }
+    ]
+  }
+}
+```
 
-- Engellenmiş IP sayısı
-- Hatalı giriş denemeleri
-- İşlenen log satır sayısı
-- AbuseIPDB rapor durumları
+### Custom Firewall Manager
+```csharp
+public class CustomFirewallManager : IFirewallManager
+{
+    public async Task<bool> BlockIpAsync(string ipAddress)
+    {
+        // Özel firewall implementasyonu
+        return true;
+    }
+    
+    public async Task<bool> UnblockIpAsync(string ipAddress)
+    {
+        // Özel firewall engel kaldırma
+        return true;
+    }
+}
+```
 
-## 🔒 Güvenlik
+### Custom Database Service
+```csharp
+public class CustomDatabaseService : IDatabaseService
+{
+    // Farklı veritabanı (PostgreSQL, MySQL) implementasyonu
+}
+```
 
-- Sadece gerekli IP'leri engelleyin
-- Regex pattern'lerini dikkatli test edin
-- Log dosyalarına erişimi kısıtlayın
-- AbuseIPDB API key'ini güvenli saklayın
+## 🐛 Sorun Giderme
+
+### Yaygın Sorunlar
+
+1. **Event Log erişim hatası**
+   ```
+   Event Log 'Security' dinlenemedi
+   ```
+   - Yönetici yetkileri ile çalıştırın
+   - Event Log servisi aktif mi kontrol edin
+
+2. **SQLite veritabanı hatası**
+   ```
+   Database path not found
+   ```
+   - Yazma izinleri kontrol edin
+   - Disk alanı kontrol edin
+
+3. **DbContext threading hatası**
+   ```
+   A second operation was started on this context instance
+   ```
+   - Bu sorun artık çözüldü (v1.0.2'de scope kullanılıyor)
+
+4. **AbuseIPDB API hatası**
+   ```
+   Rate limit exceeded
+   ```
+   - MinRaporAraligiSaat'i artırın (varsayılan: 24)
+   - API key'i kontrol edin
+
+### Debug Modunda Çalıştırma
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Fail2Ban": "Debug"
+    }
+  }
+}
+```
+
+### Event Log Test
+Windows Event Viewer'da Security ve Application log'larını kontrol edin:
+- **Windows + R** → `eventvwr.msc`
+- **Windows Logs** → **Security/Application**
+- Event ID'leri kontrol edin (4625, 4771, 18456)
+
+## 📁 Proje Yapısı
+
+```
+Fail2Ban/
+├── Configuration/
+│   ├── Fail2BanSettings.cs         # Ana konfigürasyon
+│   ├── AbuseIPDBSettings.cs        # AbuseIPDB ayarları
+│   ├── EventLogSettings.cs         # Event Log ayarları
+│   └── BanSistemleriSettings.cs    # Ban sistemleri kontrolü
+├── Data/
+│   └── Fail2BanDbContext.cs        # Entity Framework DbContext
+├── Models/
+│   ├── EngellenenIP.cs             # Memory'deki IP modeli
+│   ├── HataliGiris.cs              # Hatalı giriş modeli
+│   └── BanKaydi.cs                 # Veritabanı ban kaydı modeli
+├── Interfaces/
+│   ├── IFail2BanManager.cs         # Ana yönetim arayüzü
+│   ├── IFirewallManager.cs         # Firewall yönetim arayüzü
+│   ├── IAbuseReporter.cs           # AbuseIPDB raporlama arayüzü
+│   ├── IDatabaseService.cs         # Veritabanı işlemleri arayüzü
+│   ├── ILogAnalyzer.cs             # Log analiz arayüzü
+│   └── IEventLogMonitor.cs         # Event Log izleme arayüzü
+├── Services/
+│   ├── Fail2BanManager.cs          # Ana yönetim servisi
+│   ├── WindowsFirewallManager.cs   # Windows Firewall implementasyonu
+│   ├── AbuseIPDBReporter.cs        # AbuseIPDB raporlama servisi
+│   ├── DatabaseService.cs          # SQLite veritabanı servisi
+│   ├── LogAnalyzer.cs              # Log analiz servisi
+│   ├── WindowsEventLogMonitor.cs   # Event Log izleme servisi
+│   ├── LogMonitorService.cs        # Background log izleme
+│   └── EventLogMonitorService.cs   # Background Event Log izleme
+├── Program.cs                      # Ana program ve DI yapılandırması
+├── appsettings.json               # Konfigürasyon dosyası
+├── fail2ban.db                    # SQLite veritabanı dosyası
+└── README.md                      # Bu dokümantasyon
+```
+
+## 🎉 Versiyon Geçmişi
+
+### v1.0.2 (2025-01-24)
+- ✅ SQLite veritabanı entegrasyonu
+- ✅ Windows Event Log izleme
+- ✅ AbuseIPDB duplicate kontrolü
+- ✅ Thread safety düzeltmeleri
+- ✅ Sistem-specific AbuseIPDB mesajları
+- ✅ Gelişmiş istatistikler
+- ✅ Multiple saldırı türü desteği
+
+### v1.0.1 (2025-01-20)
+- ✅ İlk stable release
+- ✅ Mail Enable SMTP log desteği
+- ✅ Basic AbuseIPDB entegrasyonu
+- ✅ Windows Firewall yönetimi
+
+### v1.0.0 (2025-01-15)
+- ✅ İlk beta release
 
 ## 🤝 Katkıda Bulunma
 
@@ -219,136 +433,52 @@ Uygulama aşağıdaki metrikleri takip eder:
 
 ## 📄 Lisans
 
-Bu proje MIT lisansı altında lisanslanmıştır. Detaylar için `LICENSE` dosyasına bakın.
+Bu proje MIT lisansı altında lisanslanmıştır.
 
 ## 📞 Destek
 
-- Issues: GitHub Issues
-- Email: detmach@gmail.com
+- **Issues**: GitHub Issues
+- **Email**: detmach@gmail.com
 
-## 📚 Kaynaklar
+## 🙏 Teşekkürler
 
 Bu proje geliştirilirken aşağıdaki kaynaklardan yararlanılmıştır:
 
-- [MailEnable ve Mail Sunucu Güvenliği – Windows için Fail2Ban Alternatif](https://cagatayakinci.com/mailenable-ve-mail-sunucu-guvenligi-windows-icin-fail2ban-alternatif/) - Çağatay AKINCI tarafından yazılan orijinal Fail2Ban Windows implementasyonu
+- [MailEnable ve Mail Sunucu Güvenliği – Windows için Fail2Ban Alternatif](https://cagatayakinci.com/mailenable-ve-mail-sunucu-guvenligi-windows-icin-fail2ban-alternatif/) - Çağatay AKINCI'nın orijinal Fail2Ban Windows implementasyonu
 
-## 🎉 Fail2Ban Projesi Başarıyla Oluşturuldu!
+## 🎯 Roadmap
 
-### 📁 Proje Yapısı
+### Yakın Gelecek (v1.1.0)
+- [ ] Web interface (dashboard)
+- [ ] Email notification sistemi
+- [ ] Custom webhook desteği
+- [ ] IP whitelist/blacklist yönetimi
 
-```
-Fail2Ban/
-├── Configuration/
-│   ├── Fail2BanSettings.cs      # Ana konfigürasyon ayarları
-│   └── AbuseIPDBSettings.cs     # AbuseIPDB entegrasyon ayarları
-├── Models/
-│   ├── EngellenenIP.cs          # Engellenmiş IP model
-│   └── HataliGiris.cs           # Hatalı giriş model
-├── Interfaces/
-│   ├── ILogAnalyzer.cs          # Log analiz servisi arayüzü
-│   ├── IFirewallManager.cs      # Firewall yönetim arayüzü
-│   ├── IAbuseReporter.cs        # Abuse raporlama arayüzü
-│   └── IFail2BanManager.cs      # Ana yönetim servisi arayüzü
-├── Services/
-│   ├── LogAnalyzer.cs           # Log analiz implementasyonu
-│   ├── WindowsFirewallManager.cs # Windows Firewall yönetimi
-│   ├── AbuseIPDBReporter.cs     # AbuseIPDB raporlama
-│   ├── Fail2BanManager.cs       # Ana yönetim servisi
-│   └── LogMonitorService.cs     # Background log izleme servisi
-├── Program.cs                   # Ana program ve DI yapılandırması
-├── appsettings.json            # Konfigürasyon dosyası
-└── README.md                   # Dokümantasyon
-```
+### Uzun Vadeli (v2.0.0)
+- [ ] Machine learning tabanlı anomali tespiti
+- [ ] Distributed/cluster desteği
+- [ ] REST API
+- [ ] Docker containerization
 
-### 🚀 Temel Özellikler
+---
 
-1. **Modüler Yapı**: Her servis ayrı interface ve implementasyon ile ayrılmış
-2. **Dependency Injection**: .NET 9 hosting sistemi kullanılarak modern DI yapısı
-3. **Asenkron İşlemler**: Tüm I/O işlemleri async/await pattern ile
-4. **Thread-Safe**: ConcurrentDictionary kullanarak thread-safe veri yapıları
-5. **Kapsamlı Loglama**: Structured logging ile detaylı log kayıtları
-6. **Esnek Konfigürasyon**: JSON tabanlı konfigürasyon sistemi
+## 🚀 Hızlı Başlangıç
 
-### 🔧 Farklı Bloklamalar İçin Genişletme
-
-Projeyi farklı servisler için genişletmek çok kolay:
-
-#### 1. Yeni Log Filtresi Ekleme
-`appsettings.json` dosyasına yeni filtre ekleyin:
-
-```json
-{
-  "Ad": "FTP-Brute-Force",
-  "Pattern": "^(?<tarih>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})\\s+.*FTP.*(?<ipAdresi>\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}).*(?:login failed|authentication failed)",
-  "IpGrupAdi": "ipAdresi",
-  "Aktif": true,
-  "OzelMaxHata": 3,
-  "OzelEngellemeSuresi": 7200
-}
-```
-
-#### 2. Farklı Firewall Sistemi
-Yeni bir firewall manager oluşturun:
-
-```csharp
-public class PfSenseFirewallManager : IFirewallManager
-{
-    public async Task<bool> BlockIpAsync(string ipAdresi)
-    {
-        // pfSense API çağrısı
-    }
-}
-```
-
-#### 3. Farklı Log Kaynağı
-`LogMonitorService`'i genişleterek farklı log kaynaklarını destekleyin:
-
-```csharp
-public class DatabaseLogMonitorService : BackgroundService
-{
-    // Veritabanından log okuma
-}
-```
-
-### 🎯 Kullanım Örnekleri
-
-#### Konsol Modunda Çalıştırma:
 ```bash
-dotnet run
-```
+# 1. Projeyi klonlayın
+git clone https://github.com/your-repo/fail2ban-windows.git
+cd fail2ban-windows/Fail2Ban
 
-#### Manuel IP Engelleme:
-```csharp
-await fail2BanManager.BlockIpManuallyAsync("192.168.1.100", 3600, "Manuel Test");
-```
+# 2. AbuseIPDB API key'i ekleyin (opsiyonel)
+# appsettings.json → AbuseIPDBSettings → ApiKey
 
-#### Engellenen IP'leri Listeleme:
-```csharp
-var blockedIps = fail2BanManager.GetBlockedIps();
-```
-
-### 📊 Avantajlar
-
-1. **Temiz Kod**: SOLID prensipleri uygulanmış
-2. **Test Edilebilir**: Interface'ler sayesinde unit test yazılabilir
-3. **Performanslı**: Regex'ler önceden derlenmiş, thread-safe collections kullanılmış
-4. **Güvenilir**: Kapsamlı hata yönetimi ve logging
-5. **Esnek**: Konfigürasyon tabanlı, kolayca özelleştirilebilir
-
-### 🔄 Sonraki Adımlar
-
-1. **AbuseIPDB API Key**: `appsettings.json`'da API key'inizi güncelleyin
-2. **Log Yolu**: Kendi log dosya yolunuzu ayarlayın
-3. **Filtreleri Test Edin**: Regex pattern'lerinizi test edin
-4. **Windows Servis**: Production'da Windows servis olarak kurun
-
-# Geliştirme modunda çalıştır
+# 3. Çalıştırın
 dotnet run
 
-# Release modunda derle
-dotnet build --configuration Release
+# 4. Test için RDP başarısız giriş deneyin (başka bilgisayardan)
+# Hemen Event Log'da tespit edilecek ve IP banlanacak!
+```
 
-# Publish et
-dotnet publish --configuration Release --output ./publish
+**🎉 Artık Windows sunucunuz otomatik olarak korunuyor!**
 
 

@@ -251,4 +251,70 @@ public class DatabaseService : IDatabaseService
             return new Dictionary<string, object>();
         }
     }
+
+    /// <summary>
+    /// IP adresinin son 24 saat içinde AbuseIPDB'ye raporlanıp raporlanmadığını kontrol eder
+    /// </summary>
+    public async Task<bool> IpSonRaporlandiMiAsync(string ipAdresi, int saatSiniri = 24)
+    {
+        try
+        {
+            var sinirTarihi = DateTime.Now.AddHours(-saatSiniri);
+            
+            var sonRapor = await _context.BanKayitlari
+                .Where(b => b.IpAdresi == ipAdresi && 
+                           b.AbuseIPDBRaporTarihi != null && 
+                           b.AbuseIPDBRaporTarihi > sinirTarihi)
+                .AnyAsync();
+                
+            return sonRapor;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "IP son rapor kontrolü sırasında hata: {IpAdresi}", ipAdresi);
+            return true; // Hata durumunda rapor gönderilmemesi için true döner
+        }
+    }
+
+    /// <summary>
+    /// Ban kaydını AbuseIPDB'ye raporlandı olarak işaretler
+    /// </summary>
+    public async Task BanKaydiAbuseRaporlandiAsync(int banKaydiId)
+    {
+        try
+        {
+            var banKaydi = await _context.BanKayitlari.FindAsync(banKaydiId);
+            if (banKaydi != null)
+            {
+                banKaydi.AbuseIPDBRaporTarihi = DateTime.Now;
+                banKaydi.GuncellemeZamani = DateTime.Now;
+                
+                await _context.SaveChangesAsync();
+                _logger.LogDebug("Ban kaydı AbuseIPDB'ye raporlandı olarak işaretlendi: {IpAdresi}", banKaydi.IpAdresi);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Ban kaydı AbuseIPDB rapor işaretlemesi sırasında hata: {BanKaydiId}", banKaydiId);
+        }
+    }
+
+    /// <summary>
+    /// Belirli IP için en son ban kaydını getirir
+    /// </summary>
+    public async Task<BanKaydi?> GetSonBanKaydiAsync(string ipAdresi)
+    {
+        try
+        {
+            return await _context.BanKayitlari
+                .Where(b => b.IpAdresi == ipAdresi)
+                .OrderByDescending(b => b.YasaklamaZamani)
+                .FirstOrDefaultAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Son ban kaydı sorgulanırken hata: {IpAdresi}", ipAdresi);
+            return null;
+        }
+    }
 } 

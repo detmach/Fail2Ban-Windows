@@ -55,6 +55,10 @@ class Program
                     context.Configuration.GetSection("Fail2BanSettings"));
                 services.Configure<AbuseIPDBSettings>(
                     context.Configuration.GetSection("AbuseIPDBSettings"));
+                services.Configure<EventLogSettings>(
+                    context.Configuration.GetSection("EventLogSettings"));
+                services.Configure<BanSistemleriSettings>(
+                    context.Configuration.GetSection("BanSistemleri"));
 
                 // SQLite veritabanı
                 var connectionString = context.Configuration.GetConnectionString("DefaultConnection") 
@@ -71,9 +75,11 @@ class Program
                 services.AddSingleton<IAbuseReporter, AbuseIPDBReporter>();
                 services.AddScoped<IDatabaseService, DatabaseService>();
                 services.AddSingleton<IFail2BanManager, Fail2BanManager>();
+                services.AddSingleton<IEventLogMonitor, WindowsEventLogMonitor>();
 
-                // Background servis
+                // Background servisler
                 services.AddHostedService<LogMonitorService>();
+                services.AddHostedService<EventLogMonitorService>();
             })
             .ConfigureLogging((context, logging) =>
             {
@@ -128,11 +134,19 @@ class Program
         var logger = host.Services.GetRequiredService<ILogger<Program>>();
         var fail2BanSettings = host.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<Fail2BanSettings>>().Value;
         var abuseSettings = host.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<AbuseIPDBSettings>>().Value;
+        var eventLogSettings = host.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<EventLogSettings>>().Value;
+        var banSistemleriSettings = host.Services.GetRequiredService<Microsoft.Extensions.Options.IOptions<BanSistemleriSettings>>().Value;
 
         logger.LogInformation("=== Fail2Ban Servisi Başlatıldı ===");
-        logger.LogInformation("Versiyon: 1.0.1");
+        logger.LogInformation("Versiyon: 1.0.2");
         logger.LogInformation("Platform: {Platform}", Environment.OSVersion.VersionString);
         logger.LogInformation("Framework: {Framework}", Environment.Version);
+        
+        logger.LogInformation("=== Ban Sistemleri ===");
+        logger.LogInformation("Log İzleme: {Active}", banSistemleriSettings.LogIzleme.Aktif ? "Aktif" : "Pasif");
+        logger.LogInformation("Event Log İzleme: {Active}", banSistemleriSettings.EventLogIzleme.Aktif ? "Aktif" : "Pasif");
+        logger.LogInformation("AbuseIPDB Rapor: {Active}", banSistemleriSettings.AbuseIPDBRapor.Aktif ? "Aktif" : "Pasif");
+        logger.LogInformation("Windows Firewall: {Active}", banSistemleriSettings.WindowsFirewall.Aktif ? "Aktif" : "Pasif");
         
         logger.LogInformation("=== Konfigürasyon ===");
         logger.LogInformation("Maksimum Hatalı Giriş: {MaxFail}", fail2BanSettings.MaxHataliGiris);
@@ -141,11 +155,12 @@ class Program
         logger.LogInformation("Kontrol Aralığı: {Interval} ms", fail2BanSettings.KontrolAraligi);
         logger.LogInformation("Log Dosya Şablonu: {Template}", fail2BanSettings.LogDosyaYolSablonu);
         
-        logger.LogInformation("=== Aktif Filtreler ===");
-        var activeFilters = fail2BanSettings.LogFiltreler.Where(f => f.Aktif).ToList();
-        if (activeFilters.Any())
+        // Log Filtreler
+        logger.LogInformation("=== Log Dosyası Filtreleri ===");
+        var activeLogFilters = fail2BanSettings.LogFiltreler.Where(f => f.Aktif).ToList();
+        if (activeLogFilters.Any())
         {
-            foreach (var filter in activeFilters)
+            foreach (var filter in activeLogFilters)
             {
                 var maxFail = filter.OzelMaxHata ?? fail2BanSettings.MaxHataliGiris;
                 var banTime = filter.OzelEngellemeSuresi ?? fail2BanSettings.EngellemeZamani;
@@ -156,7 +171,35 @@ class Program
         }
         else
         {
-            logger.LogWarning("Aktif filtre bulunamadı!");
+            logger.LogWarning("Aktif log filtresi bulunamadı!");
+        }
+
+        // Event Log Filtreler
+        logger.LogInformation("=== Event Log Filtreleri ===");
+        logger.LogInformation("Event Log İzleme Aktif: {Active}", eventLogSettings.Aktif);
+        if (eventLogSettings.Aktif)
+        {
+            logger.LogInformation("İzlenen Event ID'ler: {EventIds}", string.Join(", ", eventLogSettings.IzlenenEventIdler));
+            logger.LogInformation("İzlenen Log'lar: {EventLogs}", string.Join(", ", eventLogSettings.IzlenenLoglar));
+            
+            var activeEventFilters = eventLogSettings.Filtreler.Where(f => f.Aktif).ToList();
+            if (activeEventFilters.Any())
+            {
+                foreach (var filter in activeEventFilters)
+                {
+                    var maxFail = filter.OzelMaxHata ?? fail2BanSettings.MaxHataliGiris;
+                    var banTime = filter.OzelEngellemeSuresi ?? fail2BanSettings.EngellemeZamani;
+                    
+                    var extraInfo = "";
+                    if (filter.LogonTypes.Any())
+                        extraInfo += $", LogonTypes=[{string.Join(",", filter.LogonTypes)}]";
+                    if (!string.IsNullOrEmpty(filter.EventSource))
+                        extraInfo += $", Source={filter.EventSource}";
+                    
+                    logger.LogInformation("- {FilterName}: MaxFail={MaxFail}, BanTime={BanTime}s{ExtraInfo}", 
+                        filter.Ad, maxFail, banTime, extraInfo);
+                }
+            }
         }
 
         logger.LogInformation("=== AbuseIPDB ===");
@@ -237,6 +280,7 @@ class Program
         
         Console.WriteLine($"\n[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] Fail2Ban servisi aktif!");
         Console.WriteLine("Gerçek zamanlı log izleme başlatıldı...");
+        Console.WriteLine("Windows Event Log izleme aktif! (RDP, Network, Kerberos, SQL Server)");
         Console.WriteLine("SQLite veritabanı ile kalıcı ban kayıtları aktif!");
         Console.WriteLine("\nDurdurmak için Ctrl+C kombinasyonunu kullanın.");
     }

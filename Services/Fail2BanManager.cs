@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
 using Fail2Ban.Configuration;
 using Fail2Ban.Interfaces;
 using Fail2Ban.Models;
@@ -16,7 +17,7 @@ public class Fail2BanManager : IFail2BanManager
     private readonly Fail2BanSettings _settings;
     private readonly IFirewallManager _firewallManager;
     private readonly IAbuseReporter _abuseReporter;
-    private readonly IDatabaseService _databaseService;
+    private readonly IServiceProvider _serviceProvider;
     
     // Thread-safe collections
     private readonly ConcurrentDictionary<string, EngellenenIP> _engellenenIpler = new();
@@ -27,13 +28,13 @@ public class Fail2BanManager : IFail2BanManager
         IOptions<Fail2BanSettings> settings,
         IFirewallManager firewallManager,
         IAbuseReporter abuseReporter,
-        IDatabaseService databaseService)
+        IServiceProvider serviceProvider)
     {
         _logger = logger;
         _settings = settings.Value;
         _firewallManager = firewallManager;
         _abuseReporter = abuseReporter;
-        _databaseService = databaseService;
+        _serviceProvider = serviceProvider;
     }
 
     public async Task<bool> RecordFailedAttemptAsync(string ipAdresi, string filterAdi)
@@ -41,8 +42,11 @@ public class Fail2BanManager : IFail2BanManager
         if (string.IsNullOrWhiteSpace(ipAdresi))
             return false;
 
-        // Veritabanından kontrol et - IP zaten banlanmış mı?
-        var veritabanindaBanli = await _databaseService.IpBanliMiAsync(ipAdresi);
+        // Veritabanından kontrol et - IP zaten banlanmış mı? (yeni scope ile)
+        using var scope = _serviceProvider.CreateScope();
+        var databaseService = scope.ServiceProvider.GetRequiredService<IDatabaseService>();
+        
+        var veritabanindaBanli = await databaseService.IpBanliMiAsync(ipAdresi);
         if (veritabanindaBanli)
         {
             _logger.LogDebug("IP adresi veritabanında zaten banlanmış: {IpAdresi}", ipAdresi);
@@ -94,10 +98,12 @@ public class Fail2BanManager : IFail2BanManager
 
     public async Task<bool> UnblockIpManuallyAsync(string ipAdresi)
     {
-        // Önce veritabanından ban kaydını pasif yap
+        // Önce veritabanından ban kaydını pasif yap (yeni scope ile)
         try
         {
-            await _databaseService.BanKaydiPasifYapAsync(ipAdresi);
+            using var scope = _serviceProvider.CreateScope();
+            var databaseService = scope.ServiceProvider.GetRequiredService<IDatabaseService>();
+            await databaseService.BanKaydiPasifYapAsync(ipAdresi);
         }
         catch (Exception ex)
         {
@@ -132,10 +138,12 @@ public class Fail2BanManager : IFail2BanManager
 
     public async Task<int> CleanupExpiredBlocksAsync()
     {
-        // Önce veritabanındaki süresi dolmuş banları pasif yap
+        // Önce veritabanındaki süresi dolmuş banları pasif yap (yeni scope ile)
         try
         {
-            await _databaseService.SuresiDolmusBanlariPasifYapAsync();
+            using var scope = _serviceProvider.CreateScope();
+            var databaseService = scope.ServiceProvider.GetRequiredService<IDatabaseService>();
+            await databaseService.SuresiDolmusBanlariPasifYapAsync();
         }
         catch (Exception ex)
         {
@@ -202,7 +210,11 @@ public class Fail2BanManager : IFail2BanManager
         {
             _logger.LogInformation("Veritabanından aktif ban kayıtları yükleniyor...");
             
-            var aktifBanlar = await _databaseService.GetAktifBanKayitlariAsync();
+            // Yeni scope ile database işlemi
+            using var scope = _serviceProvider.CreateScope();
+            var databaseService = scope.ServiceProvider.GetRequiredService<IDatabaseService>();
+            
+            var aktifBanlar = await databaseService.GetAktifBanKayitlariAsync();
             
             foreach (var ban in aktifBanlar)
             {
@@ -256,10 +268,14 @@ public class Fail2BanManager : IFail2BanManager
             // Memory'e ekle
             _engellenenIpler.TryAdd(ipAdresi, engellenenIp);
 
-            // Veritabanına ekle
+            // Veritabanına ekle (yeni scope ile)
+            BanKaydi? banKaydi = null;
             try
             {
-                await _databaseService.BanKaydiEkleAsync(
+                using var scope = _serviceProvider.CreateScope();
+                var databaseService = scope.ServiceProvider.GetRequiredService<IDatabaseService>();
+                
+                banKaydi = await databaseService.BanKaydiEkleAsync(
                     ipAdresi, 
                     sebep, 
                     engellemeSuresi / 60, // saniyeyi dakikaya çevir
@@ -279,18 +295,38 @@ public class Fail2BanManager : IFail2BanManager
             // Hatalı giriş kaydını temizle
             _hataliGirisler.TryRemove(ipAdresi, out _);
 
-            // AbuseIPDB'ye rapor gönder
-            if (_abuseReporter.IsEnabled())
+            // AbuseIPDB'ye rapor gönder (duplicate kontrollü, yeni scope ile)
+            if (_abuseReporter.IsEnabled() && banKaydi != null)
             {
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await _abuseReporter.ReportIpAsync(engellenenIp);
+                        // Her background task için yeni scope
+                        using var backgroundScope = _serviceProvider.CreateScope();
+                        var backgroundDatabaseService = backgroundScope.ServiceProvider.GetRequiredService<IDatabaseService>();
+                        
+                        // Son 24 saat içinde aynı IP için rapor gönderilmiş mi kontrol et
+                        var sonRaporlandi = await backgroundDatabaseService.IpSonRaporlandiMiAsync(ipAdresi, 24);
+                        if (sonRaporlandi)
+                        {
+                            _logger.LogInformation("IP adresi son 24 saat içinde AbuseIPDB'ye raporlandığı için tekrar raporlanmıyor: {IpAdresi}", ipAdresi);
+                            return;
+                        }
+
+                        // AbuseIPDB'ye rapor gönder
+                        var raporBasarili = await _abuseReporter.ReportBanAsync(banKaydi);
+                        
+                        // Rapor başarılıysa veritabanında işaretle
+                        if (raporBasarili)
+                        {
+                            await backgroundDatabaseService.BanKaydiAbuseRaporlandiAsync(banKaydi.Id);
+                            _logger.LogInformation("IP adresi AbuseIPDB'ye başarıyla raporlandı: {IpAdresi}", ipAdresi);
+                        }
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "AbuseIPDB raporu gönderilirken hata oluştu: {IpAdresi}", ipAdresi);
+                        _logger.LogError(ex, "AbuseIPDB raporu gönderilirken hata oluştu - IP: {IpAdresi}, Kural: {KuralAdi}", ipAdresi, sebep);
                     }
                 });
             }
