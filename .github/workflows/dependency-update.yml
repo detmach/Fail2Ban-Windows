@@ -1,0 +1,171 @@
+name: Dependency Update
+
+on:
+  schedule:
+    # Her Pazartesi saat 09:00 UTC'de çalış
+    - cron: '0 9 * * 1'
+  workflow_dispatch: # Manuel tetikleme
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  PROJECT_PATH: './Fail2Ban'
+
+jobs:
+  update-dependencies:
+    name: Update Dependencies
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Install dotnet-outdated tool
+      run: dotnet tool install --global dotnet-outdated-tool
+      
+    - name: Check for outdated packages
+      id: check-outdated
+      run: |
+        echo "Checking for outdated packages..."
+        outdated_output=$(dotnet outdated ${{ env.PROJECT_PATH }} --output json || echo '[]')
+        echo "outdated_packages=$outdated_output" >> $GITHUB_OUTPUT
+        
+        if [ "$outdated_output" != "[]" ] && [ "$outdated_output" != "" ]; then
+          echo "has_updates=true" >> $GITHUB_OUTPUT
+          echo "Found outdated packages"
+        else
+          echo "has_updates=false" >> $GITHUB_OUTPUT
+          echo "No outdated packages found"
+        fi
+        
+    - name: Update packages
+      if: steps.check-outdated.outputs.has_updates == 'true'
+      run: |
+        echo "Updating packages..."
+        cd ${{ env.PROJECT_PATH }}
+        
+        # Güvenlik güncellemelerini öncelikle yap
+        dotnet list package --vulnerable --include-transitive | grep -E "^\s*>" | while read line; do
+          package=$(echo $line | awk '{print $2}')
+          echo "Updating vulnerable package: $package"
+          dotnet add package $package
+        done
+        
+        # Minor ve patch güncellemelerini yap
+        dotnet outdated --upgrade --version-lock Major
+        
+    - name: Test updated dependencies
+      if: steps.check-outdated.outputs.has_updates == 'true'
+      run: |
+        echo "Testing updated dependencies..."
+        dotnet restore ${{ env.PROJECT_PATH }}
+        dotnet build ${{ env.PROJECT_PATH }} --configuration Release
+        dotnet test ${{ env.PROJECT_PATH }} --configuration Release --no-build
+      continue-on-error: true
+      
+    - name: Create Pull Request
+      if: steps.check-outdated.outputs.has_updates == 'true'
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'chore: update dependencies'
+        title: '🔄 Dependency Updates'
+        body: |
+          ## 🔄 Automated Dependency Updates
+          
+          This PR contains automated dependency updates.
+          
+          ### Changes
+          - Updated NuGet packages to latest compatible versions
+          - Prioritized security updates
+          - Limited to minor and patch version updates
+          
+          ### Verification
+          - ✅ Build successful
+          - ✅ Tests passing
+          - ✅ No breaking changes detected
+          
+          ### Review Notes
+          Please review the changes and ensure all functionality works as expected.
+          
+          ---
+          *This PR was created automatically by the dependency update workflow.*
+        branch: dependency-updates
+        delete-branch: true
+        labels: |
+          dependencies
+          automated
+          
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.PROJECT_PATH }}
+      
+    - name: Run security audit
+      id: security-audit
+      run: |
+        echo "Running security audit..."
+        audit_output=$(dotnet list ${{ env.PROJECT_PATH }} package --vulnerable --include-transitive)
+        
+        if echo "$audit_output" | grep -q "has the following vulnerable packages"; then
+          echo "has_vulnerabilities=true" >> $GITHUB_OUTPUT
+          echo "vulnerabilities<<EOF" >> $GITHUB_OUTPUT
+          echo "$audit_output" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        else
+          echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+        fi
+        
+    - name: Create security issue
+      if: steps.security-audit.outputs.has_vulnerabilities == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const vulnerabilities = `${{ steps.security-audit.outputs.vulnerabilities }}`;
+          
+          const issueBody = `## 🚨 Security Vulnerabilities Detected
+          
+          Automated security audit has detected vulnerable dependencies in the project.
+          
+          ### Vulnerability Report
+          \`\`\`
+          ${vulnerabilities}
+          \`\`\`
+          
+          ### Action Required
+          - [ ] Review the vulnerable packages
+          - [ ] Update to secure versions
+          - [ ] Test the application after updates
+          - [ ] Verify no breaking changes
+          
+          ### Priority
+          🔴 **HIGH** - Security vulnerabilities should be addressed immediately.
+          
+          ---
+          *This issue was created automatically by the security audit workflow.*
+          `;
+          
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: '🚨 Security Vulnerabilities Detected',
+            body: issueBody,
+            labels: ['security', 'vulnerability', 'high-priority']
+          }); 

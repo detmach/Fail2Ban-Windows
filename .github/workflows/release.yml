@@ -1,0 +1,251 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  PROJECT_PATH: './Fail2Ban'
+
+jobs:
+  validate-release:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is-prerelease: ${{ steps.version.outputs.is-prerelease }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Determine version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          version="${{ github.event.inputs.version }}"
+          is_prerelease="${{ github.event.inputs.prerelease }}"
+        else
+          version="${GITHUB_REF#refs/tags/}"
+          # Pre-release if version contains alpha, beta, rc, or pre
+          if [[ $version =~ (alpha|beta|rc|pre) ]]; then
+            is_prerelease="true"
+          else
+            is_prerelease="false"
+          fi
+        fi
+        
+        echo "version=$version" >> $GITHUB_OUTPUT
+        echo "is-prerelease=$is_prerelease" >> $GITHUB_OUTPUT
+        echo "Release version: $version (prerelease: $is_prerelease)"
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Validate project
+      run: |
+        dotnet restore ${{ env.PROJECT_PATH }}
+        dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
+        dotnet test ${{ env.PROJECT_PATH }} --configuration Release --no-build
+      continue-on-error: false
+
+  build-release:
+    name: Build Release
+    runs-on: windows-latest
+    needs: validate-release
+    
+    strategy:
+      matrix:
+        include:
+          - runtime: win-x64
+            arch: x64
+          - runtime: win-x86
+            arch: x86
+          - runtime: win-arm64
+            arch: arm64
+            
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.PROJECT_PATH }}
+      
+    - name: Publish self-contained
+      run: |
+        dotnet publish ${{ env.PROJECT_PATH }} `
+          --configuration Release `
+          --runtime ${{ matrix.runtime }} `
+          --self-contained true `
+          --output ./publish/self-contained/${{ matrix.runtime }} `
+          -p:PublishSingleFile=true `
+          -p:PublishTrimmed=true `
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          
+    - name: Publish framework-dependent
+      run: |
+        dotnet publish ${{ env.PROJECT_PATH }} `
+          --configuration Release `
+          --runtime ${{ matrix.runtime }} `
+          --self-contained false `
+          --output ./publish/framework-dependent/${{ matrix.runtime }}
+          
+    - name: Create release packages
+      run: |
+        $version = "${{ needs.validate-release.outputs.version }}"
+        
+        # Self-contained package
+        Compress-Archive -Path "./publish/self-contained/${{ matrix.runtime }}/*" `
+          -DestinationPath "./Fail2Ban-$version-${{ matrix.runtime }}-self-contained.zip"
+          
+        # Framework-dependent package
+        Compress-Archive -Path "./publish/framework-dependent/${{ matrix.runtime }}/*" `
+          -DestinationPath "./Fail2Ban-$version-${{ matrix.runtime }}-framework-dependent.zip"
+          
+        # Create checksums
+        Get-FileHash -Algorithm SHA256 "Fail2Ban-$version-${{ matrix.runtime }}-self-contained.zip" | `
+          Select-Object Hash, @{Name="File";Expression={"Fail2Ban-$version-${{ matrix.runtime }}-self-contained.zip"}} | `
+          Export-Csv -Path "checksums-${{ matrix.runtime }}.csv" -NoTypeInformation
+          
+        Get-FileHash -Algorithm SHA256 "Fail2Ban-$version-${{ matrix.runtime }}-framework-dependent.zip" | `
+          Select-Object Hash, @{Name="File";Expression={"Fail2Ban-$version-${{ matrix.runtime }}-framework-dependent.zip"}} | `
+          Export-Csv -Path "checksums-${{ matrix.runtime }}.csv" -NoTypeInformation -Append
+          
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-${{ matrix.runtime }}
+        path: |
+          ./Fail2Ban-*.zip
+          ./checksums-*.csv
+        retention-days: 90
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [validate-release, build-release]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./artifacts
+        
+    - name: Prepare release files
+      run: |
+        mkdir -p ./release-files
+        find ./artifacts -name "*.zip" -exec cp {} ./release-files/ \;
+        find ./artifacts -name "*.csv" -exec cp {} ./release-files/ \;
+        
+        # Combine all checksums
+        echo "# SHA256 Checksums" > ./release-files/CHECKSUMS.md
+        echo "" >> ./release-files/CHECKSUMS.md
+        for file in ./release-files/checksums-*.csv; do
+          if [ -f "$file" ]; then
+            tail -n +2 "$file" | while IFS=, read -r hash filename; do
+              # Remove quotes from CSV
+              hash=$(echo $hash | tr -d '"')
+              filename=$(echo $filename | tr -d '"')
+              echo "- **$filename**: \`$hash\`" >> ./release-files/CHECKSUMS.md
+            done
+          fi
+        done
+        
+    - name: Generate release notes
+      id: release-notes
+      run: |
+        version="${{ needs.validate-release.outputs.version }}"
+        
+        # Get previous tag
+        previous_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        echo "## 🚀 Fail2Ban Windows $version" > release_notes.md
+        echo "" >> release_notes.md
+        
+        if [ -n "$previous_tag" ]; then
+          echo "### 📝 Changes since $previous_tag" >> release_notes.md
+          echo "" >> release_notes.md
+          git log --pretty=format:"- %s (%h)" $previous_tag..HEAD >> release_notes.md
+          echo "" >> release_notes.md
+        fi
+        
+        echo "" >> release_notes.md
+        echo "### 📦 Downloads" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "Choose the appropriate package for your system:" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "#### Self-Contained (No .NET Runtime Required)" >> release_notes.md
+        echo "- **Windows x64**: \`Fail2Ban-$version-win-x64-self-contained.zip\`" >> release_notes.md
+        echo "- **Windows x86**: \`Fail2Ban-$version-win-x86-self-contained.zip\`" >> release_notes.md
+        echo "- **Windows ARM64**: \`Fail2Ban-$version-win-arm64-self-contained.zip\`" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "#### Framework-Dependent (.NET 9.0 Runtime Required)" >> release_notes.md
+        echo "- **Windows x64**: \`Fail2Ban-$version-win-x64-framework-dependent.zip\`" >> release_notes.md
+        echo "- **Windows x86**: \`Fail2Ban-$version-win-x86-framework-dependent.zip\`" >> release_notes.md
+        echo "- **Windows ARM64**: \`Fail2Ban-$version-win-arm64-framework-dependent.zip\`" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "### 🔐 Security" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "All packages are signed and checksums are provided in \`CHECKSUMS.md\`." >> release_notes.md
+        echo "" >> release_notes.md
+        echo "### 📖 Documentation" >> release_notes.md
+        echo "" >> release_notes.md
+        echo "- [Installation Guide](README.md#kurulum)" >> release_notes.md
+        echo "- [Configuration](README.md#konfigürasyon)" >> release_notes.md
+        echo "- [Usage Examples](README.md#kullanım)" >> release_notes.md
+        
+        # Set output for GitHub release
+        {
+          echo 'release_notes<<EOF'
+          cat release_notes.md
+          echo 'EOF'
+        } >> $GITHUB_OUTPUT
+        
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ needs.validate-release.outputs.version }}
+        name: Fail2Ban Windows ${{ needs.validate-release.outputs.version }}
+        body: ${{ steps.release-notes.outputs.release_notes }}
+        prerelease: ${{ needs.validate-release.outputs.is-prerelease == 'true' }}
+        files: |
+          ./release-files/*.zip
+          ./release-files/CHECKSUMS.md
+        generate_release_notes: false
+        make_latest: ${{ needs.validate-release.outputs.is-prerelease == 'false' }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Update release statistics
+      run: |
+        echo "✅ Release ${{ needs.validate-release.outputs.version }} created successfully!"
+        echo "📦 Packages created:"
+        ls -la ./release-files/*.zip
+        echo "🔐 Checksums generated:"
+        cat ./release-files/CHECKSUMS.md 

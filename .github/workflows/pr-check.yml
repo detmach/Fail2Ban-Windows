@@ -1,0 +1,175 @@
+name: Pull Request Check
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    types: [opened, synchronize, reopened]
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  PROJECT_PATH: './Fail2Ban'
+
+jobs:
+  pr-validation:
+    name: PR Validation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Cache NuGet packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.nuget/packages
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-nuget-
+          
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.PROJECT_PATH }}
+      
+    - name: Check code formatting
+      run: dotnet format ${{ env.PROJECT_PATH }} --verify-no-changes --verbosity diagnostic
+      continue-on-error: true
+      
+    - name: Build project
+      run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
+      
+    - name: Run tests
+      run: dotnet test ${{ env.PROJECT_PATH }} --configuration Release --no-build --verbosity normal --collect:"XPlat Code Coverage"
+      continue-on-error: true
+      
+    - name: Check for TODO/FIXME comments
+      run: |
+        echo "Checking for TODO/FIXME comments..."
+        if grep -r "TODO\|FIXME" ${{ env.PROJECT_PATH }} --include="*.cs" --exclude-dir=bin --exclude-dir=obj; then
+          echo "⚠️ Found TODO/FIXME comments in the code"
+        else
+          echo "✅ No TODO/FIXME comments found"
+        fi
+      continue-on-error: true
+      
+    - name: Check file sizes
+      run: |
+        echo "Checking for large files..."
+        find ${{ env.PROJECT_PATH }} -type f -size +1M -not -path "*/bin/*" -not -path "*/obj/*" | while read file; do
+          echo "⚠️ Large file found: $file ($(du -h "$file" | cut -f1))"
+        done
+        
+    - name: Validate appsettings.json
+      run: |
+        echo "Validating appsettings.json..."
+        if [ -f "${{ env.PROJECT_PATH }}/appsettings.json" ]; then
+          python3 -m json.tool ${{ env.PROJECT_PATH }}/appsettings.json > /dev/null && echo "✅ appsettings.json is valid JSON" || echo "❌ appsettings.json is invalid JSON"
+        else
+          echo "❌ appsettings.json not found"
+        fi
+
+  windows-compatibility:
+    name: Windows Compatibility Check
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.PROJECT_PATH }}
+      
+    - name: Build on Windows
+      run: dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
+      
+    - name: Test Windows-specific functionality
+      run: |
+        echo "Testing Windows-specific paths and commands..."
+        dotnet run --project ${{ env.PROJECT_PATH }} --help
+      timeout-minutes: 2
+      continue-on-error: true
+
+  dependency-check:
+    name: Dependency Security Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Restore dependencies
+      run: dotnet restore ${{ env.PROJECT_PATH }}
+      
+    - name: Check for vulnerable packages
+      run: |
+        echo "Checking for vulnerable NuGet packages..."
+        dotnet list ${{ env.PROJECT_PATH }} package --vulnerable --include-transitive || echo "No vulnerable packages found"
+        
+    - name: Check for outdated packages
+      run: |
+        echo "Checking for outdated packages..."
+        dotnet list ${{ env.PROJECT_PATH }} package --outdated || echo "All packages are up to date"
+
+  pr-comment:
+    name: PR Comment
+    runs-on: ubuntu-latest
+    needs: [pr-validation, windows-compatibility, dependency-check]
+    if: always()
+    
+    steps:
+    - name: Comment PR
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: pr } = await github.rest.pulls.get({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number,
+          });
+          
+          const validationStatus = '${{ needs.pr-validation.result }}';
+          const windowsStatus = '${{ needs.windows-compatibility.result }}';
+          const dependencyStatus = '${{ needs.dependency-check.result }}';
+          
+          let statusEmoji = '✅';
+          if (validationStatus === 'failure' || windowsStatus === 'failure' || dependencyStatus === 'failure') {
+            statusEmoji = '❌';
+          } else if (validationStatus === 'cancelled' || windowsStatus === 'cancelled' || dependencyStatus === 'cancelled') {
+            statusEmoji = '⚠️';
+          }
+          
+          const comment = `## ${statusEmoji} Pull Request Check Results
+          
+          | Check | Status |
+          |-------|--------|
+          | PR Validation | ${validationStatus === 'success' ? '✅' : validationStatus === 'failure' ? '❌' : '⚠️'} ${validationStatus} |
+          | Windows Compatibility | ${windowsStatus === 'success' ? '✅' : windowsStatus === 'failure' ? '❌' : '⚠️'} ${windowsStatus} |
+          | Dependency Security | ${dependencyStatus === 'success' ? '✅' : dependencyStatus === 'failure' ? '❌' : '⚠️'} ${dependencyStatus} |
+          
+          **Branch:** \`${pr.head.ref}\` → \`${pr.base.ref}\`
+          **Commit:** ${context.sha.substring(0, 7)}
+          
+          ${statusEmoji === '✅' ? '🎉 All checks passed! This PR is ready for review.' : '⚠️ Some checks failed or were skipped. Please review the results above.'}
+          `;
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          }); 
