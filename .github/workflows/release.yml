@@ -18,7 +18,7 @@ on:
 
 env:
   DOTNET_VERSION: '9.0.x'
-  PROJECT_PATH: './Fail2Ban'
+  PROJECT_PATH: '.'
 
 jobs:
   validate-release:

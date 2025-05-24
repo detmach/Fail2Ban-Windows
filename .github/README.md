@@ -58,7 +58,7 @@ Bu dizin, Fail2Ban projesi için GitHub Actions CI/CD pipeline'larını içerir.
 ### Environment Variables
 ```yaml
 DOTNET_VERSION: '9.0.x'    # .NET SDK versiyonu
-PROJECT_PATH: './Fail2Ban'  # Proje dizini
+PROJECT_PATH: '.'          # Proje dizini (root)
 ```
 
 ### Secrets (Gerekli)
@@ -125,3 +125,4 @@ git push origin v1.0.0
 - Security scan'ler otomatik olarak çalışır ve sonuçları raporlar
 - Release artifact'ları 90 gün saklanır
 - Build artifact'ları 7 gün saklanır
+- Proje dosyaları repository root dizininde bulunur
