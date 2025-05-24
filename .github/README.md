@@ -1,36 +1,23 @@
 # GitHub Actions Workflows
 
-Bu dizin, Fail2Ban projesi için GitHub Actions CI/CD pipeline'larını içerir.
+Bu dizin, Fail2Ban projesi için GitHub Actions workflow'larını içerir.
 
 ## 📋 Workflow'lar
 
-### 1. CI/CD Pipeline (`ci-cd.yml`)
-**Tetikleyiciler:**
-- `main` ve `develop` branch'lerine push
-- `main` branch'ine Pull Request
-- Release yayınlandığında
-
-**İşlevler:**
-- ✅ Kod derleme ve test etme
-- 🏗️ Windows için çoklu platform build (x64, x86)
-- 🔒 Güvenlik taraması (CodeQL)
-- 📦 Release artifact'ları oluşturma
-- 🚀 Otomatik release yayınlama
-
-### 2. Pull Request Check (`pr-check.yml`)
+### 1. Pull Request Check (`pr-check.yml`)
 **Tetikleyiciler:**
 - Pull Request açıldığında, güncellendiğinde
 
 **İşlevler:**
 - ✅ Kod formatı kontrolü
-- 🏗️ Build doğrulaması
-- 🪟 Windows uyumluluğu testi
+- 🏗️ Build doğrulaması (Ubuntu ve Windows)
 - 🔍 Dependency güvenlik kontrolü
 - 📝 Otomatik PR yorumu
 - ⚠️ TODO/FIXME kontrolü
 - 📏 Dosya boyutu kontrolü
+- 🧪 JSON konfigürasyon doğrulaması
 
-### 3. Dependency Update (`dependency-update.yml`)
+### 2. Dependency Update (`dependency-update.yml`)
 **Tetikleyiciler:**
 - Her Pazartesi 09:00 UTC (zamanlanmış)
 - Manuel tetikleme
@@ -39,15 +26,15 @@ Bu dizin, Fail2Ban projesi için GitHub Actions CI/CD pipeline'larını içerir.
 - 🔄 NuGet paket güncellemeleri
 - 🛡️ Güvenlik açığı taraması
 - 📋 Otomatik PR oluşturma
-- 🚨 Güvenlik uyarıları için issue oluşturma
+- 🚨 Güvenlik raporu gösterimi
 
-### 4. Release (`release.yml`)
+### 3. Release (`release.yml`)
 **Tetikleyiciler:**
 - Git tag push (`v*.*.*` formatında)
 - Manuel tetikleme
 
 **İşlevler:**
-- 🏗️ Çoklu platform build (x64, x86, ARM64)
+- 🏗️ Multi-platform build (x64, x86)
 - 📦 Self-contained ve framework-dependent paketler
 - 🔐 SHA256 checksum oluşturma
 - 📝 Otomatik release notes
@@ -72,7 +59,6 @@ PROJECT_PATH: '.'          # Proje dizini (root)
 |----------|------------|----------|
 | Windows x64 | `win-x64` | 64-bit Windows |
 | Windows x86 | `win-x86` | 32-bit Windows |
-| Windows ARM64 | `win-arm64` | ARM64 Windows |
 
 ### Paket Türleri
 1. **Self-Contained**: .NET runtime dahil, bağımsız çalışır
@@ -98,7 +84,6 @@ git push origin v1.0.0
 
 ## 📈 Workflow Durumu
 
-[![CI/CD Pipeline](../../actions/workflows/ci-cd.yml/badge.svg)](../../actions/workflows/ci-cd.yml)
 [![Pull Request Check](../../actions/workflows/pr-check.yml/badge.svg)](../../actions/workflows/pr-check.yml)
 [![Dependency Update](../../actions/workflows/dependency-update.yml/badge.svg)](../../actions/workflows/dependency-update.yml)
 [![Release](../../actions/workflows/release.yml/badge.svg)](../../actions/workflows/release.yml)
@@ -122,7 +107,7 @@ git push origin v1.0.0
 ## 📝 Notlar
 
 - Tüm workflow'lar Windows uyumluluğu için optimize edilmiştir
-- Security scan'ler otomatik olarak çalışır ve sonuçları raporlar
+- Basit ve güvenilir pipeline'lar tercih edilmiştir
 - Release artifact'ları 90 gün saklanır
-- Build artifact'ları 7 gün saklanır
 - Proje dosyaları repository root dizininde bulunur
+- Token izinleri problemi olan özellikler kaldırılmıştır

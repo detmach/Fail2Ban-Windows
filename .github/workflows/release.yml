@@ -62,8 +62,6 @@ jobs:
       run: |
         dotnet restore ${{ env.PROJECT_PATH }}
         dotnet build ${{ env.PROJECT_PATH }} --configuration Release --no-restore
-        dotnet test ${{ env.PROJECT_PATH }} --configuration Release --no-build
-      continue-on-error: false
 
   build-release:
     name: Build Release
@@ -77,8 +75,6 @@ jobs:
             arch: x64
           - runtime: win-x86
             arch: x86
-          - runtime: win-arm64
-            arch: arm64
             
     steps:
     - name: Checkout code
@@ -100,8 +96,7 @@ jobs:
           --self-contained true `
           --output ./publish/self-contained/${{ matrix.runtime }} `
           -p:PublishSingleFile=true `
-          -p:PublishTrimmed=true `
-          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:PublishTrimmed=true
           
     - name: Publish framework-dependent
       run: |
@@ -203,16 +198,14 @@ jobs:
         echo "#### Self-Contained (No .NET Runtime Required)" >> release_notes.md
         echo "- **Windows x64**: \`Fail2Ban-$version-win-x64-self-contained.zip\`" >> release_notes.md
         echo "- **Windows x86**: \`Fail2Ban-$version-win-x86-self-contained.zip\`" >> release_notes.md
-        echo "- **Windows ARM64**: \`Fail2Ban-$version-win-arm64-self-contained.zip\`" >> release_notes.md
         echo "" >> release_notes.md
         echo "#### Framework-Dependent (.NET 9.0 Runtime Required)" >> release_notes.md
         echo "- **Windows x64**: \`Fail2Ban-$version-win-x64-framework-dependent.zip\`" >> release_notes.md
         echo "- **Windows x86**: \`Fail2Ban-$version-win-x86-framework-dependent.zip\`" >> release_notes.md
-        echo "- **Windows ARM64**: \`Fail2Ban-$version-win-arm64-framework-dependent.zip\`" >> release_notes.md
         echo "" >> release_notes.md
         echo "### 🔐 Security" >> release_notes.md
         echo "" >> release_notes.md
-        echo "All packages are signed and checksums are provided in \`CHECKSUMS.md\`." >> release_notes.md
+        echo "All packages are provided with checksums in \`CHECKSUMS.md\`." >> release_notes.md
         echo "" >> release_notes.md
         echo "### 📖 Documentation" >> release_notes.md
         echo "" >> release_notes.md

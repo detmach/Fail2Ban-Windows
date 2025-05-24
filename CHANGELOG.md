@@ -2,6 +2,22 @@
 
 Fail2Ban Windows projesinin tüm değişiklikleri bu dosyada kaydedilir.
 
+## [1.0.1] - 2025-01-24
+
+### 🔧 GitHub Actions İyileştirmeleri
+- CI/CD Pipeline workflow'u kaldırıldı (token izinleri sorunları)
+- CodeQL analizi kaldırıldı (Resource not accessible by integration hatası)
+- Pull Request kontrolleri sadeleştirildi
+- Release workflow'u basitleştirildi (ARM64 desteği kaldırıldı)
+- Dependency update güvenlik raporu sadeleştirildi
+- Test gereksinimleri kaldırıldı (henüz test yok)
+
+### 🚀 Workflow Optimizasyonları
+- Sadece temel build ve quality check'ler
+- Windows x64 ve x86 desteği
+- Basit ve güvenilir pipeline'lar
+- Token izinleri sorunu olan özellikler kaldırıldı
+
 ## [1.0.0] - 2025-01-24
 
 ### ✨ Eklenen Özellikler
@@ -24,8 +40,7 @@ Fail2Ban Windows projesinin tüm değişiklikleri bu dosyada kaydedilir.
 
 ### 🚀 GitHub Actions CI/CD
 - Otomatik build ve test
-- Multi-platform releases (x64, x86, ARM64)
-- Security scanning (CodeQL)
+- Multi-platform releases (x64, x86)
 - Dependency vulnerability checks
 - Automated dependency updates
 - Pull request quality checks
@@ -58,6 +73,7 @@ Fail2Ban Windows projesinin tüm değişiklikleri bu dosyada kaydedilir.
 - Çoklu log dosyası desteği
 - Advanced filtering options
 - Statistics dashboard
+- Unit test implementasyonu
 
 ---
 

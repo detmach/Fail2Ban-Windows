@@ -66,7 +66,6 @@ jobs:
         echo "Testing updated dependencies..."
         dotnet restore ${{ env.PROJECT_PATH }}
         dotnet build ${{ env.PROJECT_PATH }} --configuration Release
-        dotnet test ${{ env.PROJECT_PATH }} --configuration Release --no-build
       continue-on-error: true
       
     - name: Create Pull Request
@@ -88,8 +87,7 @@ jobs:
           
           ### Verification
           - ✅ Build successful
-          - ✅ Tests passing
-          - ✅ No breaking changes detected
+          - ⚠️ Manual testing recommended
           
           ### Review Notes
           Please review the changes and ensure all functionality works as expected.
@@ -101,7 +99,7 @@ jobs:
         labels: |
           dependencies
           automated
-          
+
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -129,43 +127,14 @@ jobs:
           echo "vulnerabilities<<EOF" >> $GITHUB_OUTPUT
           echo "$audit_output" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
+          echo "⚠️ Vulnerabilities found!"
         else
           echo "has_vulnerabilities=false" >> $GITHUB_OUTPUT
+          echo "✅ No vulnerabilities found"
         fi
         
-    - name: Create security issue
+    - name: Display vulnerabilities
       if: steps.security-audit.outputs.has_vulnerabilities == 'true'
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const vulnerabilities = `${{ steps.security-audit.outputs.vulnerabilities }}`;
-          
-          const issueBody = `## 🚨 Security Vulnerabilities Detected
-          
-          Automated security audit has detected vulnerable dependencies in the project.
-          
-          ### Vulnerability Report
-          \`\`\`
-          ${vulnerabilities}
-          \`\`\`
-          
-          ### Action Required
-          - [ ] Review the vulnerable packages
-          - [ ] Update to secure versions
-          - [ ] Test the application after updates
-          - [ ] Verify no breaking changes
-          
-          ### Priority
-          🔴 **HIGH** - Security vulnerabilities should be addressed immediately.
-          
-          ---
-          *This issue was created automatically by the security audit workflow.*
-          `;
-          
-          github.rest.issues.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: '🚨 Security Vulnerabilities Detected',
-            body: issueBody,
-            labels: ['security', 'vulnerability', 'high-priority']
-          }); 
+      run: |
+        echo "🚨 Security vulnerabilities detected:"
+        echo "${{ steps.security-audit.outputs.vulnerabilities }}" 
